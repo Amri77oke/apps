@@ -134,12 +134,439 @@ const lsSet = (k, v) => {
   } catch (e) {}
 };
 
+const MODE_LABEL = (m) => (MODES.find((x) => x.id === m) || {}).label || m;
+
+function PreviewCard({job, autoplayAll, onDelete, onRender, renderBusy, updJob, apiRegistry}) {
+  const mode = job.mode;
+  const cfg = job.cfg || {};
+  const prefs = job.prefs || {};
+  const loop = prefs.loop !== false;
+  const autoplayInit = prefs.autoplay !== false && autoplayAll;
+  const w = Math.max(2, Math.round(cfg.width || 1280));
+  const h = Math.max(2, Math.round(cfg.height || 720));
+  const fps = Math.max(1, cfg.fps || 30);
+  const dur = Math.max(0.1, cfg.dur || 5);
+  const framesN = Math.min(MAX_FRAMES, Math.max(1, Math.round(dur * fps)));
+
+  const rootRef = useRef(null);
+  const playerRef = useRef(null);
+  const cnvRef = useRef(null);
+  const iframeRef = useRef(null);
+  const stageRef = useRef(null);
+  const rafRef = useRef(0);
+  const tRef = useRef(0);
+
+  const [wantPlay, setWantPlay] = useState(autoplayInit);
+  const wantPlayRef = useRef(wantPlay);
+  wantPlayRef.current = wantPlay;
+  const [visible, setVisible] = useState(false);
+  const [playing, setPlaying] = useState(autoplayInit);
+  const [tSec, setTSec] = useState(0);
+  const [err, setErr] = useState('');
+  const [scale, setScale] = useState(1);
+
+  const rswApi = () => iframeRef.current && iframeRef.current.contentWindow && iframeRef.current.contentWindow.__rsw;
+
+  const compiled = useMemo(() => {
+    if (mode === 'remotion') {
+      try {
+        const r = compileRemotion(job.code);
+        return {comp: r.comp, fn: null, err: ''};
+      } catch (e) {
+        return {comp: null, fn: null, err: String(e.message || e)};
+      }
+    }
+    if (mode === 'canvas') {
+      try {
+        const r = compileCanvas(job.code);
+        return {comp: null, fn: r.fn, err: ''};
+      } catch (e) {
+        return {comp: null, fn: null, err: String(e.message || e)};
+      }
+    }
+    return {comp: null, fn: null, err: ''};
+  }, [mode, job.code]);
+
+  const srcDoc = useMemo(() => (mode === 'html' ? buildDoc(job.code, 'LIVE') : ''), [mode, job.code]);
+
+  const drawCanvas = useCallback(
+    (t) => {
+      const c = cnvRef.current;
+      if (!c || !compiled.fn) return;
+      const ctx = c.getContext('2d');
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      try {
+        compiled.fn(ctx, t, c.width, c.height, Math.round(t * fps), fps, FX);
+      } finally {
+        ctx.restore();
+      }
+    },
+    [compiled, fps]
+  );
+
+  useEffect(() => {
+    setErr(compiled.err || '');
+  }, [compiled]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (es) => {
+        for (const en of es) if (en.target === el) setVisible(en.isIntersecting);
+      },
+      {threshold: 0.05}
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (mode !== 'html') return;
+    const onMsg = (e) => {
+      if (e.source !== (iframeRef.current && iframeRef.current.contentWindow)) return;
+      const d = e.data;
+      if (d && d.rsw === 'error') setErr('HTML: ' + d.message);
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, [mode, srcDoc]);
+
+  useEffect(() => {
+    if (mode !== 'html') return;
+    const id = setTimeout(() => {
+      const r = rswApi();
+      if (r && !wantPlayRef.current) r.pause();
+    }, 80);
+    return () => clearTimeout(id);
+  }, [mode, srcDoc]);
+
+  useEffect(() => {
+    if (mode === 'canvas') return;
+    if (visible) {
+      if (wantPlayRef.current) {
+        if (mode === 'remotion') {
+          if (playerRef.current) playerRef.current.play();
+        } else {
+          const r = rswApi();
+          if (r) r.play();
+        }
+      }
+    } else if (mode === 'remotion') {
+      if (playerRef.current) playerRef.current.pause();
+    } else {
+      const r = rswApi();
+      if (r) r.pause();
+    }
+  }, [visible, mode, srcDoc, framesN]);
+
+  useEffect(() => {
+    if (mode !== 'canvas') return;
+    const c = cnvRef.current;
+    if (!c) return;
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+    tRef.current = 0;
+    setTSec(0);
+    if (compiled.fn) drawCanvas(0);
+  }, [mode, compiled, w, h, drawCanvas]);
+
+  useEffect(() => {
+    if (mode !== 'canvas' || !wantPlay || !visible) return;
+    let alive = true;
+    let last = performance.now();
+    const tick = (ts) => {
+      if (!alive) return;
+      const dt = Math.min(0.1, (ts - last) / 1000);
+      last = ts;
+      if (compiled.fn) {
+        tRef.current += dt;
+        if (tRef.current >= dur) {
+          if (loop) {
+            tRef.current = 0;
+            const c = cnvRef.current;
+            if (c) {
+              const ctx = c.getContext('2d');
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              ctx.clearRect(0, 0, c.width, c.height);
+            }
+          } else {
+            tRef.current = dur;
+            setWantPlay(false);
+          }
+        }
+        drawCanvas(tRef.current);
+        setTSec(tRef.current);
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, [mode, wantPlay, visible, loop, dur, compiled, drawCanvas]);
+
+  useEffect(() => {
+    if (mode !== 'remotion') return;
+    const id = setInterval(() => {
+      const p = playerRef.current;
+      if (!p) return;
+      setTSec(p.getCurrentFrame() / fps);
+      setPlaying(p.isPlaying());
+    }, 120);
+    return () => clearInterval(id);
+  }, [mode, fps]);
+
+  useEffect(() => {
+    if (mode !== 'html') return;
+    const id = setInterval(() => {
+      const r = rswApi();
+      if (!r) return;
+      r.setDur(dur);
+      r.setLoop(loop);
+      const st = r.state();
+      setTSec(st.t / 1000);
+      setPlaying(st.playing);
+    }, 140);
+    return () => clearInterval(id);
+  }, [mode, dur, loop]);
+
+  useEffect(() => {
+    if (mode !== 'html') return;
+    const el = stageRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      const r = el.getBoundingClientRect();
+      if (r.width) setScale(r.width / w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [mode, w]);
+
+  const clearCanvas = () => {
+    const c = cnvRef.current;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+  };
+
+  const implRef = useRef(null);
+  implRef.current = {
+    play: () => {
+      setWantPlay(true);
+      if (mode === 'remotion') {
+        if (playerRef.current) playerRef.current.play();
+      } else if (mode === 'html') {
+        const r = rswApi();
+        if (r) r.play();
+      }
+    },
+    pause: () => {
+      setWantPlay(false);
+      if (mode === 'remotion') {
+        if (playerRef.current) playerRef.current.pause();
+      } else if (mode === 'html') {
+        const r = rswApi();
+        if (r) r.pause();
+      }
+    },
+    stop: () => {
+      setWantPlay(false);
+      if (mode === 'remotion') {
+        const p = playerRef.current;
+        if (p) {
+          p.pause();
+          p.seekTo(0);
+        }
+      } else if (mode === 'html') {
+        const r = rswApi();
+        if (r) {
+          r.pause();
+          r.seek(0);
+        }
+      } else {
+        tRef.current = 0;
+        setTSec(0);
+        clearCanvas();
+        if (compiled.fn) drawCanvas(0);
+      }
+    },
+    restart: () => {
+      setWantPlay(true);
+      if (mode === 'remotion') {
+        const p = playerRef.current;
+        if (p) {
+          p.seekTo(0);
+          p.play();
+        }
+      } else if (mode === 'html') {
+        const r = rswApi();
+        if (r) {
+          r.seek(0);
+          r.play();
+        }
+      } else {
+        tRef.current = 0;
+        setTSec(0);
+        clearCanvas();
+        if (compiled.fn) drawCanvas(0);
+      }
+    },
+  };
+
+  const api = useMemo(
+    () => ({
+      play: () => implRef.current.play(),
+      pause: () => implRef.current.pause(),
+      stop: () => implRef.current.stop(),
+      restart: () => implRef.current.restart(),
+    }),
+    []
+  );
+
+  useEffect(() => {
+    apiRegistry.current.set(job.id, api);
+    return () => {
+      apiRegistry.current.delete(job.id);
+    };
+  }, [apiRegistry, api, job.id]);
+
+  const onSeek = (e) => {
+    const f = Number(e.target.value);
+    const t = f / fps;
+    setTSec(t);
+    if (mode === 'remotion') {
+      if (playerRef.current) playerRef.current.seekTo(f);
+    } else if (mode === 'canvas') {
+      tRef.current = t;
+      clearCanvas();
+      drawCanvas(t);
+    } else {
+      const r = rswApi();
+      if (r) r.seek(Math.round(t * 1000));
+    }
+  };
+
+  const setPref = (k, v) => updJob(job.id, {prefs: {...(job.prefs || {}), [k]: v}});
+
+  const isPlaying = mode === 'canvas' ? wantPlay : playing;
+  const transportFrame = Math.min(framesN - 1, Math.max(0, Math.round(tSec * fps)));
+
+  return (
+    <div className="pv-card" ref={rootRef}>
+      <div className="pv-head">
+        <span className="pv-title" title={job.name}>
+          {job.name}
+        </span>
+        <span className="chip mode">{MODE_LABEL(mode)}</span>
+        <div className="pv-actions">
+          <button title="Render + unduh animasi ini" disabled={renderBusy} onClick={onRender}>
+            ⬇
+          </button>
+          <button className="danger" title="Hapus dari batch & pratinjau" onClick={onDelete}>
+            ✕
+          </button>
+        </div>
+      </div>
+      <div className="pv-stage" ref={stageRef} style={{aspectRatio: w + ' / ' + h}}>
+        {mode === 'remotion' && compiled.comp && (
+          <div className="pv-player">
+            <Player
+              ref={playerRef}
+              component={compiled.comp}
+              durationInFrames={framesN}
+              fps={fps}
+              compositionWidth={w}
+              compositionHeight={h}
+              loop={loop}
+              style={{width: '100%', height: '100%'}}
+              acknowledgeRemotionLicense
+            />
+          </div>
+        )}
+        {mode === 'canvas' && <canvas ref={cnvRef} width={w} height={h} />}
+        {mode === 'html' && (
+          <iframe
+            ref={iframeRef}
+            title={'Pratinjau ' + job.name}
+            srcDoc={srcDoc}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: w,
+              height: h,
+              border: 0,
+              transform: 'scale(' + scale + ')',
+              transformOrigin: '0 0',
+            }}
+          />
+        )}
+        {err && <div className="pv-err">{err}</div>}
+        {!visible && !err && (
+          <div className="pv-offscreen">
+            <span>Pratinjau dijeda di luar pandangan</span>
+            <span style={{fontSize: 10.5, opacity: 0.7}}>gulir ke sini untuk melanjutkan</span>
+          </div>
+        )}
+      </div>
+      <div className="pv-transport">
+        <button title={isPlaying ? 'Jeda' : 'Putar'} onClick={isPlaying ? implRef.current.pause : implRef.current.play}>
+          {isPlaying ? '⏸' : '▶'}
+        </button>
+        <button title="Ulang dari awal" onClick={implRef.current.restart}>
+          ↺
+        </button>
+        <button title="Stop" onClick={implRef.current.stop}>
+          ⏹
+        </button>
+        <input type="range" min={0} max={Math.max(0, framesN - 1)} value={transportFrame} onChange={onSeek} aria-label="Scrub waktu" />
+        <span className="time">
+          {tSec.toFixed(1)}s / {dur.toFixed(1)}s
+        </span>
+      </div>
+      <div className="pv-foot">
+        <label className="check">
+          <input type="checkbox" checked={loop} onChange={(e) => setPref('loop', e.target.checked)} />
+          Ulangi
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={prefs.autoplay !== false} onChange={(e) => setPref('autoplay', e.target.checked)} />
+          Auto-play
+        </label>
+        <span className="pv-meta">
+          {w}×{h} · {fps}fps
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [mode, setMode] = useState(() => lsGet('rsw-mode', 'remotion'));
   const [codes, setCodes] = useState(() => ({...DEFAULT_CODE, ...lsGet('rsw-codes', {})}));
   const [cfg, setCfg] = useState(() => sanitizeCfg({...DEFAULT_CFG, ...lsGet('rsw-cfg', {})}));
-  const [prefs, setPrefs] = useState(() => ({loop: true, autoDl: true, ...lsGet('rsw-prefs', {})}));
-  const [jobs, setJobs] = useState(() => lsGet('rsw-batch', []));
+  const [prefs, setPrefs] = useState(() => ({
+    loop: true,
+    autoDl: true,
+    pvAuto: true,
+    pvCols: 2,
+    pvDir: 'v',
+    theme: 'dark',
+    ...lsGet('rsw-prefs', {}),
+  }));
+  const [jobs, setJobs] = useState(() =>
+    lsGet('rsw-batch', []).map((j) => ({...j, prefs: {loop: true, autoplay: true, ...(j.prefs || {})}}))
+  );
   const [logs, setLogs] = useState([]);
   const [animName, setAnimName] = useState('animasi');
   const [err, setErr] = useState('');
@@ -162,8 +589,13 @@ export default function App() {
   const rafRef = useRef(0);
   const tRef = useRef(0);
   const lastCfgRef = useRef('');
+  const pvApi = useRef(new Map());
 
-  const {loop, autoDl} = prefs;
+  const {loop, autoDl, pvAuto, pvCols, pvDir, theme} = prefs;
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   useEffect(() => lsSet('rsw-mode', mode), [mode]);
   useEffect(() => lsSet('rsw-codes', codes), [codes]);
@@ -179,6 +611,7 @@ export default function App() {
 
   useEffect(() => {
     const onMsg = (e) => {
+      if (e.source !== (iframeRef.current && iframeRef.current.contentWindow)) return;
       const d = e.data;
       if (d && d.rsw === 'error') setErr('HTML: ' + d.message);
     };
@@ -462,7 +895,7 @@ export default function App() {
     setMode('remotion');
     setCodes({...DEFAULT_CODE});
     setCfg({...DEFAULT_CFG});
-    setPrefs({loop: true, autoDl: true});
+    setPrefs((p) => ({loop: true, autoDl: true, pvAuto: true, pvCols: 2, pvDir: 'v', theme: p.theme}));
     setJobs([]);
     setAnimName('animasi');
     lastCfgRef.current = '';
@@ -667,6 +1100,7 @@ export default function App() {
       mode,
       code: codes[mode],
       cfg: sanitizeCfg(cfg),
+      prefs: {loop: true, autoplay: pvAuto},
       status: 'idle',
       progress: 0,
     };
@@ -711,7 +1145,7 @@ export default function App() {
         let k = 2;
         while (names.has(name)) name = en.name + ' (' + k++ + ')';
         names.add(name);
-        return {id: uid(), ...en, name, status: 'idle', progress: 0};
+        return {id: uid(), ...en, name, prefs: {loop: true, autoplay: pvAuto}, status: 'idle', progress: 0};
       });
       return [...s, ...added];
     });
@@ -803,10 +1237,18 @@ export default function App() {
             <h1>
               SA Animation Studio <span className="badge">Suite</span>
             </h1>
-            <span className="tagline">Pratinjau, batch, dan ekspor video — semuanya berjalan di browser</span>
+            <span className="tagline">Pratinjau multi, batch, dan ekspor video — semuanya berjalan di browser</span>
           </div>
         </div>
         <div className="row">
+          <button
+            className="icon-btn"
+            onClick={() => setPrefs((p) => ({...p, theme: p.theme === 'dark' ? 'light' : 'dark'}))}
+            title={theme === 'dark' ? 'Ganti ke mode siang' : 'Ganti ke mode malam'}
+            aria-label="Mode siang/malam"
+          >
+            {theme === 'dark' ? '☀' : '🌙'}
+          </button>
           <label className="btn">
             Buka file
             <input type="file" accept={CODE_FILE_ACCEPT} hidden onChange={openFile} />
@@ -978,6 +1420,91 @@ export default function App() {
           {msg && <p className="msg">{msg}</p>}
         </section>
       </main>
+
+      {jobs.length > 0 && (
+        <section className="previews">
+          <div className="previews-head">
+            <h2>Pratinjau Multi · {jobs.length}</h2>
+            <span className="hint-inline">
+              Kartu pratinjau tertaut langsung dengan daftar batch di bawah — tambah/hapus/rename di satu tempat tersinkron otomatis.
+            </span>
+          </div>
+          <div className="pv-toolbar">
+            <button
+              onClick={() => {
+                for (const api of pvApi.current.values()) api.play();
+              }}
+              title="Putar semua pratinjau"
+            >
+              ▶ Semua
+            </button>
+            <button
+              onClick={() => {
+                for (const api of pvApi.current.values()) api.pause();
+              }}
+              title="Jeda semua pratinjau"
+            >
+              ⏸ Jeda semua
+            </button>
+            <button
+              onClick={() => {
+                for (const api of pvApi.current.values()) api.stop();
+              }}
+              title="Stop semua pratinjau"
+            >
+              ⏹ Stop semua
+            </button>
+            <span className="sep" />
+            <label className="check">
+              <input type="checkbox" checked={pvAuto} onChange={(e) => setPrefs((p) => ({...p, pvAuto: e.target.checked}))} />
+              Auto-play
+            </label>
+            <div className="layout-ctl">
+              <div className="seg">
+                <button
+                  className={pvDir === 'v' ? 'active' : ''}
+                  onClick={() => setPrefs((p) => ({...p, pvDir: 'v'}))}
+                  title="Tata grid vertikal"
+                >
+                  ⬍ Grid
+                </button>
+                <button
+                  className={pvDir === 'h' ? 'active' : ''}
+                  onClick={() => setPrefs((p) => ({...p, pvDir: 'h'}))}
+                  title="Tata strip horizontal (geser)"
+                >
+                  ⬌ Strip
+                </button>
+              </div>
+              <label>
+                Jumlah kolom
+                <input
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="1"
+                  value={pvCols}
+                  onChange={(e) => setPrefs((p) => ({...p, pvCols: Math.max(1, Number(e.target.value) || 2)}))}
+                />
+              </label>
+            </div>
+          </div>
+          <div className={'previews-grid' + (pvDir === 'h' ? ' strip' : '')} style={{'--pv-cols': pvCols}}>
+            {jobs.map((j) => (
+              <PreviewCard
+                key={j.id}
+                job={j}
+                autoplayAll={pvAuto}
+                onDelete={() => delJob(j.id)}
+                onRender={() => runExport({job: j, container: batchContainer})}
+                renderBusy={prog !== null}
+                updJob={updJob}
+                apiRegistry={pvApi}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className={'panel' + (dragOver ? ' drag' : '')}
         onDragOver={(e) => {
