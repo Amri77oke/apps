@@ -33,7 +33,7 @@ const MODS = {
   '@remotion/shapes': shapes,
   '@remotion/paths': paths,
   '@remotion/noise': noise,
-  '@remotion/transitions': tr,
+  '@remotion/transitions': {...tr, fade, slide, wipe, flip},
   '@remotion/transitions/fade': {fade},
   '@remotion/transitions/slide': {slide},
   '@remotion/transitions/wipe': {wipe},

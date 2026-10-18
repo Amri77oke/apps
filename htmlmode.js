@@ -157,6 +157,7 @@ export function buildStandalone(code) {
 }
 
 const imgCache = new Map();
+const textCache = new Map();
 
 function blobToDataURL(blob) {
   return new Promise((res, rej) => {
@@ -178,6 +179,116 @@ export async function fetchDataURL(url) {
   }
   imgCache.set(url, du);
   return du;
+}
+
+async function fetchStylesheetText(url) {
+  if (textCache.has(url)) return textCache.get(url);
+  let css = null;
+  try {
+    const resp = await fetch(url, {mode: 'cors', credentials: 'omit'});
+    if (resp.ok) css = await resp.text();
+  } catch (e) {
+    css = null;
+  }
+  textCache.set(url, css);
+  return css;
+}
+
+const IMPORT_RE = /@import\s+(?:url\(\s*(['"]?)([^'")]+?)\1\s*\)|(['"])([^'"]+?)\3)\s*([^;{]*);?/gi;
+const CSS_URL_RE = /url\(\s*(['"]?)([^'")]+?)\1\s*\)/g;
+
+async function bakeCssUrls(css, base) {
+  if (!css || css.indexOf('url(') < 0) return css;
+  CSS_URL_RE.lastIndex = 0;
+  const found = [];
+  let m;
+  while ((m = CSS_URL_RE.exec(css))) {
+    const raw = (m[2] || '').trim();
+    if (!raw || raw.startsWith('data:') || raw.startsWith('#')) continue;
+    let abs = raw;
+    try {
+      abs = new URL(raw, base).href;
+    } catch (e) {
+      continue;
+    }
+    if (!found.some((f) => f.abs === abs)) found.push({abs, match: m[0]});
+  }
+  if (!found.length) return css;
+  for (const f of found) f.du = await fetchDataURL(f.abs);
+  let out = css;
+  for (const f of found) {
+    if (f.du) out = out.split(f.match).join('url("' + f.du + '")');
+  }
+  return out;
+}
+
+export async function inlineExternalStyles(win) {
+  const doc = win.document;
+  const base = doc.baseURI || location.href;
+  // 1) Inline @import di dalam <style> yang ada (SVG image tidak bisa memuat resource eksternal).
+  for (const st of Array.from(doc.querySelectorAll('style'))) {
+    if (!st.textContent || st.textContent.indexOf('@import') < 0) continue;
+    const inlined = await inlineImports(st.textContent, base, 0);
+    st.textContent = inlined;
+  }
+  // 2) Ganti setiap <link rel="stylesheet"> dengan <style> berisi CSS + aset data-URL.
+  const links = Array.from(doc.querySelectorAll('link[rel="stylesheet" i][href]'));
+  let failed = 0;
+  for (const link of links) {
+    const href = link.getAttribute('href');
+    let abs = href;
+    try {
+      abs = new URL(href, base).href;
+    } catch (e) {}
+    const css = await fetchStylesheetText(abs);
+    if (!css) {
+      failed++;
+      continue;
+    }
+    const baked = await inlineImports(css, abs, 1);
+    const st = doc.createElement('style');
+    if (link.getAttribute('media')) st.setAttribute('media', link.getAttribute('media'));
+    st.textContent = baked;
+    link.parentNode.insertBefore(st, link);
+    link.remove();
+  }
+  // 3) Bake url() di semua <style> (font & gambar) agar ikut terekspor.
+  for (const st of Array.from(doc.querySelectorAll('style'))) {
+    if (!st.textContent || st.textContent.indexOf('url(') < 0) continue;
+    st.textContent = await bakeCssUrls(st.textContent, base);
+  }
+  return failed;
+}
+
+async function inlineImports(css, base, depth) {
+  if (!css || depth > 3 || css.indexOf('@import') < 0) return css;
+  const matches = [];
+  IMPORT_RE.lastIndex = 0;
+  let m;
+  while ((m = IMPORT_RE.exec(css))) {
+    const url = m[2] || m[4];
+    if (!url) continue;
+    let abs = url;
+    try {
+      abs = new URL(url, base).href;
+    } catch (e) {
+      continue;
+    }
+    matches.push({full: m[0], abs, media: m[5] || ''});
+  }
+  if (!matches.length) return css;
+  let out = css;
+  for (const {full, abs, media} of matches) {
+    const nested = await fetchStylesheetText(abs);
+    let replacement = '';
+    if (nested) {
+      replacement = await inlineImports(nested, abs, depth + 1);
+      const wrap = media && !/layer|supports/i.test(media) ? media.trim() : '';
+      if (wrap) replacement = '@media ' + wrap + '{' + replacement + '}';
+    }
+    out = out.split(full).join(replacement);
+  }
+  return out;
 }
 
 const splitList = (s) => {
@@ -235,7 +346,8 @@ const URL_RE = /url\((['"]?)([^'")]+)\1\)/g;
 
 export async function collectBackgrounds(doc) {
   const out = [];
-  const els = [doc.documentElement, ...doc.querySelectorAll('*')];
+  // doc.querySelectorAll('*') sudah mencakup <html>; clone (elemen) tidak — urutan harus sejajar.
+  const els = Array.from(doc.querySelectorAll('*'));
   const dv = doc.defaultView;
   for (let i = 0; i < els.length; i++) {
     let bi = '';
@@ -272,7 +384,10 @@ function applyBakedBackgrounds(clone, baked) {
 
 function freeze(doc, clone, tMs) {
   const dv = doc.defaultView;
-  const oEls = [doc.documentElement, ...doc.querySelectorAll('*')];
+  // doc.querySelectorAll('*') sudah mencakup <html>, sedangkan clone.querySelectorAll('*')
+  // tidak mencakup clone itu sendiri. Jangan tambahkan documentElement lagi — itu menggeser
+  // indeks satu posisi dan membuat animasi/background jatuh ke elemen berikutnya.
+  const oEls = Array.from(doc.querySelectorAll('*'));
   const cEls = [clone, ...clone.querySelectorAll('*')];
   const idx = new Map();
   oEls.forEach((el, i) => idx.set(el, i));
@@ -293,31 +408,44 @@ function freeze(doc, clone, tMs) {
   try {
     anims = doc.getAnimations({subtree: true});
   } catch (e) {}
+  // Kumpulkan SEMUA animasi per elemen agar elemen dengan beberapa animasi
+  // tetap dirender benar (bukan hanya animasi terakhir).
+  const byTarget = new Map();
   for (const a of anims) {
     const target = a.effect && a.effect.target;
     if (!target) continue;
+    if (!byTarget.has(target)) byTarget.set(target, []);
+    byTarget.get(target).push(a);
+  }
+  for (const [target, list] of byTarget) {
     const ce = cEls[idx.get(target)];
     if (!ce) continue;
     const cs = dv.getComputedStyle(target);
-    if (typeof a.animationName === 'string') {
+    const cssAnims = list.filter((a) => typeof a.animationName === 'string');
+    if (cssAnims.length) {
       const names = splitList(cs.animationName);
-      const k = Math.max(0, names.indexOf(a.animationName));
       const durs = splitList(cs.animationDuration);
       const dels = splitList(cs.animationDelay);
       const tfs = splitList(cs.animationTimingFunction);
       const iters = splitList(cs.animationIterationCount);
       const dirs = splitList(cs.animationDirection);
       const fills = splitList(cs.animationFillMode);
+      const pick = (arr, name) => {
+        const k = Math.max(0, names.indexOf(name));
+        return arr[Math.min(k, arr.length - 1)];
+      };
       const st = ce.style;
-      st.animationName = names[Math.min(k, names.length - 1)];
-      st.animationDuration = durs[Math.min(k, durs.length - 1)];
-      st.animationDelay = parseSec(dels[Math.min(k, dels.length - 1)]) - t + 's';
-      st.animationTimingFunction = tfs[Math.min(k, tfs.length - 1)];
-      st.animationIterationCount = iters[Math.min(k, iters.length - 1)];
-      st.animationDirection = dirs[Math.min(k, dirs.length - 1)];
-      st.animationFillMode = fills[Math.min(k, fills.length - 1)];
+      st.animationName = cssAnims.map((a) => a.animationName).join(', ');
+      st.animationDuration = cssAnims.map((a) => pick(durs, a.animationName)).join(', ');
+      st.animationDelay = cssAnims.map((a) => parseSec(pick(dels, a.animationName)) - t + 's').join(', ');
+      st.animationTimingFunction = cssAnims.map((a) => pick(tfs, a.animationName)).join(', ');
+      st.animationIterationCount = cssAnims.map((a) => pick(iters, a.animationName)).join(', ');
+      st.animationDirection = cssAnims.map((a) => pick(dirs, a.animationName)).join(', ');
+      st.animationFillMode = cssAnims.map((a) => pick(fills, a.animationName)).join(', ');
       st.animationPlayState = 'paused';
-    } else {
+    }
+    for (const a of list) {
+      if (typeof a.animationName === 'string') continue;
       const props = new Set();
       try {
         for (const kf of a.effect.getKeyframes()) {
@@ -416,9 +544,20 @@ export function makeHtmlProvider({code, width, height, fps}) {
         await new Promise((r) => setTimeout(r, 25));
       }
       win.__rsw.seek(0);
+      let failedLinks = 0;
+      try {
+        failedLinks = await inlineExternalStyles(win);
+      } catch (e) {
+        failedLinks = Array.from(win.document.querySelectorAll('link[rel="stylesheet" i][href]')).length;
+      }
+      // Tunggu font hasil inline selesai dimuat agar metrik teks konsisten sejak frame pertama.
+      try {
+        await Promise.race([win.document.fonts.ready, new Promise((r) => setTimeout(r, 2000))]);
+      } catch (e) {}
       cache.baked = await collectBackgrounds(win.document);
-      if (win.document.querySelector('link[rel="stylesheet" i]')) {
-        this.warn = 'Catatan: stylesheet eksternal (<link>) tidak ikut terekspor. Gunakan <style> inline atau @font-face data-URL.';
+      if (failedLinks > 0) {
+        this.warn =
+          'Catatan: ' + failedLinks + ' stylesheet eksternal gagal di-inline (CORS) — tampilan ekspor bisa berbeda. Gunakan <style> inline bila memungkinkan.';
       }
     },
     async renderFrame(i, cnv) {
