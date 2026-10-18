@@ -246,7 +246,9 @@ export async function collectBackgrounds(doc) {
     }
     if (!bi || bi === 'none' || !bi.includes('url(')) continue;
     const resolved = {};
-    for (const m of bi.matchAll(URL_RE)) {
+    URL_RE.lastIndex = 0;
+    let m;
+    while ((m = URL_RE.exec(bi))) {
       const u = m[2];
       if (!u || u.startsWith('data:')) continue;
       if (!(u in resolved)) resolved[u] = await fetchDataURL(u);
@@ -281,8 +283,10 @@ function freeze(doc, clone, tMs) {
     } catch (e) {
       continue;
     }
-    if (cs.animationName !== 'none') cEls[i].style.animation = 'none';
-    if (cs.transitionProperty !== 'none') cEls[i].style.transition = 'none';
+    const ce = cEls[i];
+    if (!ce) continue;
+    if (cs.animationName !== 'none') ce.style.animation = 'none';
+    if (cs.transitionProperty !== 'none') ce.style.transition = 'none';
   }
   const t = tMs / 1000;
   let anims = [];
@@ -336,12 +340,16 @@ function freeze(doc, clone, tMs) {
 export async function snapshotToCanvas(win, cnv, cache) {
   const doc = win.document;
   const clone = doc.documentElement.cloneNode(true);
-  clone.querySelectorAll('script').forEach((s) => s.remove());
-  clone.querySelectorAll('link[rel="stylesheet" i]').forEach((s) => s.remove());
+  // PENTING: jangan hapus elemen dari clone sebelum freeze/applyBakedBackgrounds —
+  // freeze memetakan elemen doc → clone lewat indeks; menghapus node menggeser indeks
+  // dan membuat cEls[i] undefined ("can't access property style, a[m] is undefined").
   const tMs = win.__RSW ? win.__RSW.t : 0;
   freeze(doc, clone, tMs);
   await inlineImages(doc, clone);
   if (cache && cache.baked) applyBakedBackgrounds(clone, cache.baked);
+  // Baru setelah pemetaan selesai: buang script & stylesheet eksternal dari snapshot.
+  clone.querySelectorAll('script').forEach((s) => s.remove());
+  clone.querySelectorAll('link[rel="stylesheet" i]').forEach((s) => s.remove());
   const xml = new XMLSerializer().serializeToString(clone);
   const svg =
     '<svg xmlns="http://www.w3.org/2000/svg" width="' + cnv.width + '" height="' + cnv.height + '">' +
@@ -354,14 +362,22 @@ export async function snapshotToCanvas(win, cnv, cache) {
   const url = URL.createObjectURL(new Blob([svg], {type: 'image/svg+xml;charset=utf-8'}));
   try {
     const img = new Image();
+    // Pasang handler SEBELUM memicu load — decode() bisa menolak setelah event error terlewat.
+    const ready = new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error('Rasterisasi DOM gagal (SVG foreignObject ditolak browser)'));
+    });
     img.src = url;
     try {
       await img.decode();
     } catch (e) {
-      await new Promise((res, rej) => {
-        img.onload = res;
-        img.onerror = () => rej(new Error('Rasterisasi DOM gagal (SVG foreignObject ditolak browser)'));
-      });
+      await Promise.race([
+        ready,
+        new Promise(
+          (_, rej) =>
+            setTimeout(() => rej(new Error('Rasterisasi DOM gagal (SVG foreignObject ditolak browser)')), 15000)
+        ),
+      ]);
     }
     ctx.drawImage(img, 0, 0, cnv.width, cnv.height);
     if (cache) {
