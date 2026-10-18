@@ -49,6 +49,11 @@
   box-sizing: border-box;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 html,
 body {
   margin: 0;
@@ -56,6 +61,7 @@ body {
 }
 
 body {
+  overflow-x: clip;
   background:
     radial-gradient(1100px 480px at 85% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
     radial-gradient(900px 420px at -10% 110%, rgba(34, 211, 238, 0.1), transparent 60%),
@@ -181,6 +187,8 @@ button {
   height: var(--ctl-h);
   padding: 0 15px;
   cursor: pointer;
+  white-space: nowrap;
+  touch-action: manipulation;
   transition: background 0.15s, border-color 0.15s, transform 0.05s, box-shadow 0.15s;
 }
 
@@ -1106,8 +1114,160 @@ ul.jobs progress {
   }
 }
 
+/* ===== Ponsel & layar sempit ===== */
+
+@media (max-width: 720px) {
+  .app {
+    padding: 0 14px 24px;
+  }
+
+  header {
+    margin: 0 -14px 14px;
+    padding: 10px 14px;
+  }
+
+  .tagline {
+    font-size: 11px;
+  }
+
+  .editor,
+  .side,
+  .panel,
+  .previews {
+    padding: 13px;
+  }
+
+  /* Tab mode: satu baris, bisa digeser, tanpa patah-patah */
+  .mode-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mode-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mode-tabs .chip {
+    flex: 0 0 auto;
+    padding: 0 13px;
+  }
+
+  .editor-tools .name-input {
+    flex: 1 1 130px;
+    width: auto;
+    min-width: 0;
+  }
+
+  .stage {
+    --maxh: 40vh;
+  }
+
+  /* Transport bisa melipat agar tidak meluber di layar kecil */
+  .transport {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
+  .transport input[type='range'] {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .previews-head .hint-inline {
+    display: none;
+  }
+
+  .zoom-backdrop {
+    padding: 12px;
+  }
+
+  .zoom-modal {
+    width: min(100%, calc(64vh * var(--zar, 16 / 9)));
+    max-height: 94vh;
+    padding: 10px;
+  }
+
+  .log-info {
+    min-width: 0;
+  }
+}
+
+/* ===== Perangkat sentuh (target sentuh & zoom input iOS) ===== */
+
+@media (hover: none) and (pointer: coarse) {
+  select,
+  input[type='number'],
+  input.name-input,
+  input.job-name,
+  textarea {
+    font-size: 16px;
+  }
+
+  input[type='checkbox'] {
+    width: 17px;
+    height: 17px;
+  }
+
+  .pv-actions button {
+    height: 32px;
+    min-width: 32px;
+    padding: 0 11px;
+  }
+
+  .pv-actions button.danger {
+    padding: 0 9px;
+  }
+
+  .pv-transport {
+    padding: 6px;
+    gap: 8px;
+  }
+
+  .pv-transport button {
+    height: 32px;
+    width: 36px;
+    font-size: 14px;
+  }
+
+  .pv-toolbar button,
+  .layout-ctl .seg button {
+    height: 34px;
+  }
+
+  .layout-ctl .seg button {
+    padding: 0 13px;
+  }
+}
+
+@media (max-width: 480px) {
+  .tagline {
+    display: none;
+  }
+
+  button,
+  label.btn {
+    padding: 0 12px;
+    font-size: 13.5px;
+  }
+
+  .row button.primary {
+    flex: 1 1 auto;
+  }
+
+  textarea {
+    min-height: 260px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+    animation: none !important;
   }
 }
