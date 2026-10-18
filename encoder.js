@@ -166,6 +166,7 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
   rec.start(1000);
   const frameMs = 1000 / fps;
   const wallStart = performance.now();
+  let stoppedErr = null;
   if (onPhase) onPhase('render');
   try {
     for (let i = 0; i < frames; i++) {
@@ -184,8 +185,14 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
     try {
       for (const t of stream.getVideoTracks()) t.stop();
     } catch (e) {}
-    await stopped;
+    try {
+      await stopped;
+    } catch (e) {
+      stoppedErr = e;
+    }
   }
+  if (stoppedErr && !chunks.length) throw stoppedErr;
+  if (!chunks.length) throw new Error('Perekam MediaRecorder tidak menghasilkan data video.');
   const type = mime.split(';')[0];
   const wall = (performance.now() - wallStart) / 1000;
   const note = wall > (frames / fps) * 1.15 && frames > 1 ? ' (durasi riil ' + wall.toFixed(1) + 's — render melambat dari waktu-nyata)' : '';
