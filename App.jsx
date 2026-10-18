@@ -706,6 +706,7 @@ export default function App() {
   const [cfgOpenId, setCfgOpenId] = useState(null);
   const [stageScale, setStageScale] = useState(1);
   const [batchInfo, setBatchInfo] = useState(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   const playerRef = useRef(null);
   const cnvRef = useRef(null);
@@ -969,6 +970,46 @@ export default function App() {
     }
   };
 
+  const autoplayMain = () => {
+    if (mode === 'remotion') {
+      const p = playerRef.current;
+      if (!p) return false;
+      p.seekTo(0);
+      p.play();
+      setFrame(0);
+      setPlaying(true);
+      return true;
+    }
+    if (mode === 'canvas') {
+      const c = cnvRef.current;
+      if (c) {
+        const ctx = c.getContext('2d');
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, c.width, c.height);
+      }
+      tRef.current = 0;
+      setTSec(0);
+      setPlaying(true);
+      if (compiled.fn) drawCanvas(0);
+      return true;
+    }
+    const r = rsw();
+    if (!r) return false;
+    r.seek(0);
+    r.play();
+    return true;
+  };
+
+  // Pratinjau utama selalu mulai sendiri: saat muat, ganti mode, atau muat animasi baru.
+  useEffect(() => {
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      if (autoplayMain() || tries > 40) clearInterval(id);
+    }, 100);
+    return () => clearInterval(id);
+  }, [mode, reloadTick]);
+
   const onSeek = (e) => {
     const f = Number(e.target.value);
     const t = f / cfg.fps;
@@ -1011,6 +1052,7 @@ export default function App() {
     if (!k) return;
     setCode(TEMPLATES[mode][k]);
     setAnimName(slug(k));
+    setReloadTick((t) => t + 1);
     setMsg('Template "' + k + '" dimuat.');
     e.target.value = '';
   };
@@ -1026,6 +1068,7 @@ export default function App() {
       setMode(first.mode);
       setCodes((c) => ({...c, [first.mode]: first.code}));
       setAnimName(slug(first.name));
+      setReloadTick((t) => t + 1);
       if (entries.length > 1) {
         setJobs((s) => [
           ...s,
@@ -1065,6 +1108,7 @@ export default function App() {
     setJobs([]);
     setAnimName('animasi');
     lastCfgRef.current = '';
+    setReloadTick((t) => t + 1);
     setErr('');
     setMsg('Pengaturan direset ke awal (durasi default 5 detik).');
   };
@@ -1081,6 +1125,7 @@ export default function App() {
     setLogs([]);
     setAnimName('animasi');
     lastCfgRef.current = '';
+    setReloadTick((t) => t + 1);
     setErr('');
     setTab('batch');
     setMsg('Semua data dibersihkan — studio kembali ke kondisi awal (durasi default 5 detik).');
@@ -1475,6 +1520,7 @@ export default function App() {
     setCfg(sanitizeCfg(effCfg(j)));
     setAnimName(j.name);
     lastCfgRef.current = '';
+    setReloadTick((t) => t + 1);
     setMsg('Pratinjau batch "' + j.name + '" dimuat ke studio.');
   };
 
