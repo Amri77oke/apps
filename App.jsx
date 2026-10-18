@@ -136,7 +136,7 @@ const lsSet = (k, v) => {
 
 const MODE_LABEL = (m) => (MODES.find((x) => x.id === m) || {}).label || m;
 
-function PreviewCard({job, autoplayAll, onDelete, onRender, renderBusy, updJob, apiRegistry}) {
+function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, updJob, apiRegistry}) {
   const mode = job.mode;
   const cfg = job.cfg || {};
   const prefs = job.prefs || {};
@@ -469,6 +469,11 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, renderBusy, updJob, 
         </span>
         <span className="chip mode">{MODE_LABEL(mode)}</span>
         <div className="pv-actions">
+          {onZoom && (
+            <button title="Perbesar pratinjau ini" onClick={onZoom}>
+              ⛶
+            </button>
+          )}
           <button title="Render + unduh animasi ini" disabled={renderBusy} onClick={onRender}>
             ⬇
           </button>
@@ -559,7 +564,7 @@ export default function App() {
     loop: true,
     autoDl: true,
     pvAuto: true,
-    pvCols: 2,
+    pvW: 300,
     pvDir: 'v',
     theme: 'dark',
     ...lsGet('rsw-prefs', {}),
@@ -579,6 +584,7 @@ export default function App() {
   const [frame, setFrame] = useState(0);
   const [batchContainer, setBatchContainer] = useState('mp4');
   const [dragOver, setDragOver] = useState(false);
+  const [zoomId, setZoomId] = useState(null);
   const [stageScale, setStageScale] = useState(1);
 
   const playerRef = useRef(null);
@@ -590,8 +596,23 @@ export default function App() {
   const tRef = useRef(0);
   const lastCfgRef = useRef('');
   const pvApi = useRef(new Map());
+  const zoomApi = useRef(new Map());
 
-  const {loop, autoDl, pvAuto, pvCols, pvDir, theme} = prefs;
+  const {loop, autoDl, pvAuto, pvW, pvDir, theme} = prefs;
+  const zoomJob = zoomId ? jobs.find((j) => j.id === zoomId) : null;
+
+  useEffect(() => {
+    if (!zoomId) return;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setZoomId(null);
+    };
+    window.addEventListener('keydown', onKey);
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = '';
+    };
+  }, [zoomId]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -895,7 +916,7 @@ export default function App() {
     setMode('remotion');
     setCodes({...DEFAULT_CODE});
     setCfg({...DEFAULT_CFG});
-    setPrefs((p) => ({loop: true, autoDl: true, pvAuto: true, pvCols: 2, pvDir: 'v', theme: p.theme}));
+    setPrefs((p) => ({loop: true, autoDl: true, pvAuto: true, pvW: 300, pvDir: 'v', theme: p.theme}));
     setJobs([]);
     setAnimName('animasi');
     lastCfgRef.current = '';
@@ -1294,7 +1315,7 @@ export default function App() {
         </section>
 
         <section className="side">
-          <div className="stage" ref={stageRef} style={{aspectRatio: cfg.width + ' / ' + cfg.height}}>
+          <div className="stage" ref={stageRef} style={{'--ar': cfg.width + ' / ' + cfg.height}}>
             {mode === 'remotion' && compiled.comp && (
               <Player
                 ref={playerRef}
@@ -1477,19 +1498,19 @@ export default function App() {
                 </button>
               </div>
               <label>
-                Jumlah kolom
+                Ukuran kartu
                 <input
                   type="range"
-                  min="1"
-                  max="4"
-                  step="1"
-                  value={pvCols}
-                  onChange={(e) => setPrefs((p) => ({...p, pvCols: Math.max(1, Number(e.target.value) || 2)}))}
+                  min="260"
+                  max="640"
+                  step="20"
+                  value={pvW}
+                  onChange={(e) => setPrefs((p) => ({...p, pvW: Math.min(640, Math.max(260, Number(e.target.value) || 300))}))}
                 />
               </label>
             </div>
           </div>
-          <div className={'previews-grid' + (pvDir === 'h' ? ' strip' : '')} style={{'--pv-cols': pvCols}}>
+          <div className={'previews-grid' + (pvDir === 'h' ? ' strip' : '')} style={{'--pv-w': pvW + 'px'}}>
             {jobs.map((j) => (
               <PreviewCard
                 key={j.id}
@@ -1497,6 +1518,7 @@ export default function App() {
                 autoplayAll={pvAuto}
                 onDelete={() => delJob(j.id)}
                 onRender={() => runExport({job: j, container: batchContainer})}
+                onZoom={() => setZoomId(j.id)}
                 renderBusy={prog !== null}
                 updJob={updJob}
                 apiRegistry={pvApi}
@@ -1504,6 +1526,35 @@ export default function App() {
             ))}
           </div>
         </section>
+      )}
+
+      {zoomJob && (
+        <div className="zoom-backdrop" onClick={() => setZoomId(null)}>
+          <div
+            className="zoom-modal"
+            style={{'--zar': zoomJob.cfg.width + ' / ' + zoomJob.cfg.height}}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="zoom-head">
+              <b>{zoomJob.name}</b>
+              <button className="ghost" title="Tutup (Esc)" onClick={() => setZoomId(null)}>
+                ✕
+              </button>
+            </div>
+            <PreviewCard
+              job={zoomJob}
+              autoplayAll={pvAuto}
+              onDelete={() => {
+                delJob(zoomJob.id);
+                setZoomId(null);
+              }}
+              onRender={() => runExport({job: zoomJob, container: batchContainer})}
+              renderBusy={prog !== null}
+              updJob={updJob}
+              apiRegistry={zoomApi}
+            />
+          </div>
+        </div>
       )}
 
       <section className={'panel' + (dragOver ? ' drag' : '')}
