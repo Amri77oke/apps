@@ -149,7 +149,21 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
-  const stream = canvas.captureStream(fps);
+  if (typeof canvas.captureStream !== 'function') {
+    throw new Error('Browser tidak mendukung canvas.captureStream — perbarui browser untuk ekspor video.');
+  }
+  // Beberapa browser (WebKit) gagal merekam canvas yang tidak terpasang di DOM.
+  canvas.style.cssText = 'position:fixed;left:-100000px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+  document.body.appendChild(canvas);
+  let stream;
+  try {
+    stream = canvas.captureStream(fps);
+  } catch (e) {
+    try {
+      canvas.remove();
+    } catch (err) {}
+    throw new Error('Browser tidak dapat menangkap aliran canvas: ' + ((e && e.message) || e));
+  }
   const rec = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: bitrateFor(quality, width, height, fps)});
   const chunks = [];
   let recErr = null;
@@ -186,6 +200,9 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
       for (const t of stream.getVideoTracks()) t.stop();
     } catch (e) {}
     try {
+      canvas.remove();
+    } catch (e) {}
+    try {
       await stopped;
     } catch (e) {
       stoppedErr = e;
@@ -195,7 +212,10 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
   if (!chunks.length) throw new Error('Perekam MediaRecorder tidak menghasilkan data video.');
   const type = mime.split(';')[0];
   const wall = (performance.now() - wallStart) / 1000;
-  const note = wall > (frames / fps) * 1.15 && frames > 1 ? ' (durasi riil ' + wall.toFixed(1) + 's — render melambat dari waktu-nyata)' : '';
+  const slowNote =
+    wall > (frames / fps) * 1.15 && frames > 1 ? '(durasi riil ' + wall.toFixed(1) + 's — render melambat dari waktu-nyata)' : '';
+  const fmtNote = container === 'mp4' && !type.includes('mp4') ? '(MP4 tidak didukung browser ini — hasil disimpan sebagai WebM)' : '';
+  const note = [slowNote, fmtNote].filter(Boolean).join(' ');
   return {blob: new Blob(chunks, {type}), ext: type.includes('mp4') ? 'mp4' : 'webm', via: 'mediarecorder', note};
 }
 
@@ -225,9 +245,16 @@ export async function renderPngFrame({width, height, fps, provider, frame, signa
     canvas.width = width;
     canvas.height = height;
     await provider.renderFrame(frame, canvas);
-    return await new Promise((res, rej) =>
-      canvas.toBlob((b) => (b ? res(b) : rej(new Error('Gagal membuat PNG'))), 'image/png')
-    );
+    if (typeof canvas.toBlob === 'function') {
+      const blob = await new Promise((res, rej) =>
+        canvas.toBlob((b) => (b ? res(b) : rej(new Error('Gagal membuat PNG'))), 'image/png')
+      );
+      return blob;
+    }
+    // Fallback untuk browser tanpa canvas.toBlob.
+    const du = canvas.toDataURL('image/png');
+    const resp = await fetch(du);
+    return await resp.blob();
   } finally {
     provider.destroy();
   }

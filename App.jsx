@@ -629,7 +629,9 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
           <input
             type="checkbox"
             checked={synced}
-            onChange={(e) => updJob(job.id, e.target.checked ? {sync: true, cfg: {...mainCfg}} : {sync: false})}
+            onChange={(e) =>
+              updJob(job.id, e.target.checked ? {sync: true, cfg: {...mainCfg}} : {sync: false, cfg: sanitizeCfg(eff)})
+            }
           />
           <span>⇄ Utama</span>
         </label>
@@ -682,6 +684,7 @@ export default function App() {
     lsGet('rsw-batch', []).map((j) => ({
       ...j,
       sync: j.sync !== false,
+      cfg: sanitizeCfg(j.cfg || {}),
       prefs: {loop: true, autoplay: true, ...(j.prefs || {})},
       status: j.status === 'rendering' ? 'idle' : j.status || 'idle',
       progress: 0,
@@ -709,6 +712,7 @@ export default function App() {
   const iframeRef = useRef(null);
   const stageRef = useRef(null);
   const abortRef = useRef(null);
+  const busyRef = useRef(false);
   const rafRef = useRef(0);
   const tRef = useRef(0);
   const lastCfgRef = useRef('');
@@ -1115,6 +1119,10 @@ export default function App() {
   };
 
   const runExport = async ({job, container, overrideCfg, forceDl = false, keepPaused = false}) => {
+    if (busyRef.current) {
+      setMsg('Render sedang berjalan — tunggu hingga selesai atau batalkan.');
+      return {ok: false, error: 'busy'};
+    }
     let savedEntry = null;
     const save = (entry) => {
       savedEntry = entry;
@@ -1165,6 +1173,7 @@ export default function App() {
       setMsg('Frame dibatasi ke ' + MAX_FRAMES + ' (kurangi durasi/FPS untuk hasil penuh).');
     }
     abortRef.current = new AbortController();
+    busyRef.current = true;
     let lastProgAt = 0;
     const onProgress = (p) => {
       const now = performance.now();
@@ -1182,13 +1191,23 @@ export default function App() {
         const {comp} = compileRemotion(j.code);
         const composition = {id: 'main', component: comp, durationInFrames: framesN, fps: j.cfg.fps, width: w, height: h};
         const videoCodec = container === 'mp4' ? 'h264' : 'vp9';
-        const chk = await canRenderMediaOnWeb({width: w, height: h, container, videoCodec});
-        if (!chk.canRender) throw new Error(chk.issues.map((i) => i.message).join('\n'));
+        const errsOf = (c) => c.issues.filter((i) => i.severity === 'error');
+        let muted = false;
+        let chk = await canRenderMediaOnWeb({width: w, height: h, container, videoCodec});
+        if (!chk.canRender && errsOf(chk).length && errsOf(chk).every((i) => i.type === 'audio-codec-unsupported')) {
+          // Browser tidak punya encoder audio — coba lagi tanpa audio agar render tetap jalan.
+          muted = true;
+          chk = await canRenderMediaOnWeb({width: w, height: h, container, videoCodec, muted});
+        }
+        if (!chk.canRender) {
+          throw new Error(errsOf(chk).map((i) => i.message).join('\n') || 'Browser tidak mendukung render format ini.');
+        }
         const res = await renderMediaOnWeb({
           composition,
           container,
           videoCodec,
           videoBitrate: j.cfg.quality,
+          muted,
           signal: abortRef.current.signal,
           onProgress: (p) => onProgress(p.progress),
         });
@@ -1208,7 +1227,7 @@ export default function App() {
           via: 'remotion ' + videoCodec,
           blob,
         });
-        setMsg(okMsg);
+        setMsg(okMsg + (muted ? ' · tanpa audio (encoder audio tidak tersedia di browser ini)' : ''));
       } else {
         const provider =
           j.mode === 'canvas'
@@ -1261,6 +1280,7 @@ export default function App() {
       );
       return {ok: false, aborted: !!aborted, error: e.message || String(e)};
     } finally {
+      busyRef.current = false;
       setProg(null);
       setBusy(null);
       abortRef.current = null;
@@ -2015,7 +2035,9 @@ export default function App() {
                       <input
                         type="checkbox"
                         checked={synced}
-                        onChange={(e) => updJob(j.id, e.target.checked ? {sync: true, cfg: sanitizeCfg(cfg)} : {sync: false})}
+                        onChange={(e) =>
+                          updJob(j.id, e.target.checked ? {sync: true, cfg: sanitizeCfg(cfg)} : {sync: false, cfg: sanitizeCfg(eff)})
+                        }
                       />
                     </label>
                     <input className="job-name" value={j.name} onChange={(e) => updJob(j.id, {name: e.target.value})} />
