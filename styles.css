@@ -668,7 +668,7 @@ progress::-moz-progress-bar {
 
 .previews-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(var(--pv-w, 300px), 100%), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(var(--pv-w, 260px), 100%), 1fr));
   gap: 14px;
 }
 
@@ -691,7 +691,7 @@ progress::-moz-progress-bar {
 }
 
 .previews-grid.strip > .pv-card {
-  flex: 0 0 var(--pv-w, 300px);
+  flex: 0 0 var(--pv-w, 260px);
   max-width: 100%;
   min-width: 220px;
   scroll-snap-align: start;

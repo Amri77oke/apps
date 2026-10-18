@@ -165,6 +165,10 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   const [err, setErr] = useState('');
   const [scale, setScale] = useState(1);
 
+  useEffect(() => {
+    setWantPlay(prefs.autoplay !== false && autoplayAll);
+  }, [prefs.autoplay, autoplayAll]);
+
   const rswApi = () => iframeRef.current && iframeRef.current.contentWindow && iframeRef.current.contentWindow.__rsw;
 
   const compiled = useMemo(() => {
@@ -246,6 +250,22 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   }, [mode, srcDoc]);
 
   useEffect(() => {
+    if (mode !== 'html' || !wantPlay || !visible) return;
+    let tries = 0;
+    const id = setInterval(() => {
+      tries += 1;
+      const r = rswApi();
+      if (r) {
+        r.play();
+        clearInterval(id);
+      } else if (tries > 20) {
+        clearInterval(id);
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [mode, wantPlay, visible, srcDoc]);
+
+  useEffect(() => {
     if (mode === 'canvas') return;
     if (visible) {
       if (wantPlayRef.current) {
@@ -262,7 +282,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
       const r = rswApi();
       if (r) r.pause();
     }
-  }, [visible, mode, srcDoc, framesN]);
+  }, [visible, mode, srcDoc, framesN, wantPlay]);
 
   useEffect(() => {
     if (mode !== 'canvas') return;
@@ -560,15 +580,22 @@ export default function App() {
   const [mode, setMode] = useState(() => lsGet('rsw-mode', 'remotion'));
   const [codes, setCodes] = useState(() => ({...DEFAULT_CODE, ...lsGet('rsw-codes', {})}));
   const [cfg, setCfg] = useState(() => sanitizeCfg({...DEFAULT_CFG, ...lsGet('rsw-cfg', {})}));
-  const [prefs, setPrefs] = useState(() => ({
-    loop: true,
-    autoDl: true,
-    pvAuto: true,
-    pvW: 300,
-    pvDir: 'v',
-    theme: 'dark',
-    ...lsGet('rsw-prefs', {}),
-  }));
+  const [prefs, setPrefs] = useState(() => {
+    const p = {
+      loop: true,
+      autoDl: true,
+      pvAuto: true,
+      pvW: 260,
+      pvDir: 'v',
+      theme: 'dark',
+      ...lsGet('rsw-prefs', {}),
+    };
+    if (!p.pvWRev) {
+      p.pvW = Math.min(Number(p.pvW) || 260, 260);
+      p.pvWRev = 1;
+    }
+    return p;
+  });
   const [jobs, setJobs] = useState(() =>
     lsGet('rsw-batch', []).map((j) => ({...j, prefs: {loop: true, autoplay: true, ...(j.prefs || {})}}))
   );
@@ -1256,7 +1283,7 @@ export default function App() {
         <div className="brand">
           <div className="brand-text">
             <h1>
-              SA Animation Studio <span className="badge">Suite</span>
+              SA Studio
             </h1>
             <span className="tagline">Pratinjau multi, batch, dan ekspor video — semuanya berjalan di browser</span>
           </div>
@@ -1325,6 +1352,7 @@ export default function App() {
                 compositionWidth={cfg.width}
                 compositionHeight={cfg.height}
                 loop={loop}
+                autoPlay
                 style={{width: '100%', height: '100%'}}
                 acknowledgeRemotionLicense
                 errorFallback={({error}) => <pre className="err">{error.message}</pre>}
@@ -1501,11 +1529,11 @@ export default function App() {
                 Ukuran kartu
                 <input
                   type="range"
-                  min="260"
+                  min="220"
                   max="640"
                   step="20"
                   value={pvW}
-                  onChange={(e) => setPrefs((p) => ({...p, pvW: Math.min(640, Math.max(260, Number(e.target.value) || 300))}))}
+                  onChange={(e) => setPrefs((p) => ({...p, pvW: Math.min(640, Math.max(220, Number(e.target.value) || 260))}))}
                 />
               </label>
             </div>
@@ -1691,7 +1719,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span>SA Animation Studio · render, batch, dan ekspor video berjalan sepenuhnya di browser — tanpa server</span>
+        <span>SA Studio · render, batch, dan ekspor video berjalan sepenuhnya di browser — tanpa server</span>
       </footer>
     </div>
   );
