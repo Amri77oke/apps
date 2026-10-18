@@ -109,11 +109,19 @@ const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.m
 const extFor = (m) => (m === 'html' ? 'html' : m === 'canvas' ? 'js' : 'jsx');
 
 function downloadBlob(blob, name) {
+  if (!blob) return false;
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = url;
   a.download = name;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  a.remove();
+  // Beri waktu cukup untuk berkas video besar sebelum URL dilepas.
+  setTimeout(() => URL.revokeObjectURL(url), 120000);
+  return true;
 }
 
 function downloadText(text, name, mime) {
@@ -136,16 +144,30 @@ const lsSet = (k, v) => {
 
 const MODE_LABEL = (m) => (MODES.find((x) => x.id === m) || {}).label || m;
 
-function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, updJob, apiRegistry}) {
+function validateJobCode(m, code) {
+  if (!String(code || '').trim()) return 'Kode kosong.';
+  if (m === 'html') return '';
+  try {
+    if (m === 'remotion') compileRemotion(code);
+    else if (m === 'canvas') compileCanvas(code);
+    else return 'Mode tidak dikenali: ' + m;
+    return '';
+  } catch (e) {
+    return String((e && e.message) || e);
+  }
+}
+
+function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, onDownload, lastFile, container, onZoom, renderBusy, updJob, apiRegistry}) {
   const mode = job.mode;
-  const cfg = job.cfg || {};
+  const synced = job.sync !== false;
+  const eff = synced ? mainCfg : job.cfg || {};
   const prefs = job.prefs || {};
   const loop = prefs.loop !== false;
   const autoplayInit = prefs.autoplay !== false && autoplayAll;
-  const w = evenize(Math.max(2, Math.round(cfg.width || 1280)));
-  const h = evenize(Math.max(2, Math.round(cfg.height || 720)));
-  const fps = Math.max(1, cfg.fps || 30);
-  const dur = Math.max(0.1, cfg.dur || 5);
+  const w = evenize(Math.max(2, Math.round(eff.width || 1280)));
+  const h = evenize(Math.max(2, Math.round(eff.height || 720)));
+  const fps = Math.max(1, eff.fps || 30);
+  const dur = Math.max(0.1, eff.dur || 5);
   const framesN = Math.min(MAX_FRAMES, Math.max(1, Math.round(dur * fps)));
 
   const rootRef = useRef(null);
@@ -155,6 +177,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   const stageRef = useRef(null);
   const rafRef = useRef(0);
   const tRef = useRef(0);
+  const compiledRef = useRef(null);
 
   const [wantPlay, setWantPlay] = useState(autoplayInit);
   const wantPlayRef = useRef(wantPlay);
@@ -163,7 +186,13 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   const [playing, setPlaying] = useState(autoplayInit);
   const [tSec, setTSec] = useState(0);
   const [err, setErr] = useState('');
-  const [scale, setScale] = useState(1);
+  const [boxW, setBoxW] = useState(0);
+  const scale = boxW ? boxW / w : 1;
+  // Kanvas pratinjau digambar seukuran kartu (× DPR), bukan resolusi ekspor penuh — 4K/8K tetap ringan.
+  const dpr = typeof window !== 'undefined' ? Math.min(2, window.devicePixelRatio || 1) : 1;
+  const pxScale = Math.min(1, (Math.ceil(((boxW || 320) * dpr) / 80) * 80) / w);
+  const cw = Math.max(2, Math.round(w * pxScale));
+  const ch = Math.max(2, Math.round(h * pxScale));
 
   useEffect(() => {
     setWantPlay(prefs.autoplay !== false && autoplayAll);
@@ -199,14 +228,16 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
       if (!c || !compiled.fn) return;
       const ctx = c.getContext('2d');
       ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.setTransform(c.width / w, 0, 0, c.height / h, 0, 0);
       try {
-        compiled.fn(ctx, t, c.width, c.height, Math.round(t * fps), fps, FX);
+        compiled.fn(ctx, t, w, h, Math.round(t * fps), fps, FX);
+      } catch (e) {
+        setErr(String((e && e.message) || e));
       } finally {
         ctx.restore();
       }
     },
-    [compiled, fps]
+    [compiled, fps, w, h]
   );
 
   useEffect(() => {
@@ -288,15 +319,19 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
     if (mode !== 'canvas') return;
     const c = cnvRef.current;
     if (!c) return;
-    c.width = w;
-    c.height = h;
+    if (c.width !== cw) c.width = cw;
+    if (c.height !== ch) c.height = ch;
     const ctx = c.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
-    tRef.current = 0;
-    setTSec(0);
-    if (compiled.fn) drawCanvas(0);
-  }, [mode, compiled, w, h, drawCanvas]);
+    if (compiledRef.current !== compiled) {
+      compiledRef.current = compiled;
+      tRef.current = 0;
+      setTSec(0);
+    }
+    if (tRef.current > dur) tRef.current = 0;
+    if (compiled.fn) drawCanvas(tRef.current);
+  }, [mode, compiled, cw, ch, dur, drawCanvas]);
 
   useEffect(() => {
     if (mode !== 'canvas' || !wantPlay || !visible) return;
@@ -360,16 +395,18 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   }, [mode, dur, loop]);
 
   useEffect(() => {
-    if (mode !== 'html') return;
     const el = stageRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
+    if (!el) return;
+    const measure = () => {
       const r = el.getBoundingClientRect();
-      if (r.width) setScale(r.width / w);
-    });
+      if (r.width) setBoxW(r.width);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [mode, w]);
+  }, []);
 
   const clearCanvas = () => {
     const c = cnvRef.current;
@@ -381,6 +418,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
 
   const implRef = useRef(null);
   implRef.current = {
+    isPlaying: () => wantPlayRef.current,
     play: () => {
       setWantPlay(true);
       if (mode === 'remotion') {
@@ -445,6 +483,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
 
   const api = useMemo(
     () => ({
+      isPlaying: () => implRef.current.isPlaying(),
       play: () => implRef.current.play(),
       pause: () => implRef.current.pause(),
       stop: () => implRef.current.stop(),
@@ -481,8 +520,12 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   const isPlaying = mode === 'canvas' ? wantPlay : playing;
   const transportFrame = Math.min(framesN - 1, Math.max(0, Math.round(tSec * fps)));
 
+  const rendering = job.status === 'rendering';
+  const pct = Math.round((job.progress || 0) * 100);
+  const fmt = String(container || 'mp4').toUpperCase();
+
   return (
-    <div className="pv-card" ref={rootRef}>
+    <div className={'pv-card' + (rendering ? ' is-rendering' : '')} ref={rootRef}>
       <div className="pv-head">
         <span className="pv-title" title={job.name}>
           {job.name}
@@ -490,14 +533,19 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
         <span className="chip mode">{MODE_LABEL(mode)}</span>
         <div className="pv-actions">
           {onZoom && (
-            <button title="Perbesar pratinjau ini" onClick={onZoom}>
+            <button title="Perbesar pratinjau ini" aria-label="Perbesar" onClick={onZoom}>
               ⛶
             </button>
           )}
-          <button title="Render + unduh animasi ini" disabled={renderBusy} onClick={onRender}>
-            ⬇
+          <button
+            className="pv-render"
+            title={'Render ' + fmt + ' ' + w + '×' + h + ' lalu unduh'}
+            disabled={renderBusy || !!err}
+            onClick={onRender}
+          >
+            ⬇ {fmt}
           </button>
-          <button className="danger" title="Hapus dari batch & pratinjau" onClick={onDelete}>
+          <button className="danger" title="Hapus dari batch & pratinjau" aria-label="Hapus" onClick={onDelete}>
             ✕
           </button>
         </div>
@@ -519,7 +567,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
             />
           </div>
         )}
-        {mode === 'canvas' && <canvas ref={cnvRef} width={w} height={h} />}
+        {mode === 'canvas' && <canvas ref={cnvRef} width={cw} height={ch} />}
         {mode === 'html' && (
           <iframe
             ref={iframeRef}
@@ -540,8 +588,24 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
         {err && <div className="pv-err">{err}</div>}
         {!visible && !err && (
           <div className="pv-offscreen">
-            <span>Pratinjau dijeda di luar pandangan</span>
-            <span style={{fontSize: 10.5, opacity: 0.7}}>gulir ke sini untuk melanjutkan</span>
+            <span>Dijeda di luar layar</span>
+          </div>
+        )}
+        <span className="pv-badge" title="Pengaturan efektif pratinjau & render">
+          {!synced && <b className="kustom-tag">kustom</b>}
+          {w}×{h} · {fps}fps
+        </span>
+        {rendering && (
+          <div className="pv-busy" role="status">
+            <div className="pv-ring" style={{'--p': pct}}>
+              <b>{pct}%</b>
+            </div>
+            <span>Merender {fmt}…</span>
+            {onCancel && (
+              <button className="danger" onClick={onCancel}>
+                Batalkan
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -557,20 +621,37 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
         </button>
         <input type="range" min={0} max={Math.max(0, framesN - 1)} value={transportFrame} onChange={onSeek} aria-label="Scrub waktu" />
         <span className="time">
-          {tSec.toFixed(1)}s / {dur.toFixed(1)}s
+          {tSec.toFixed(1)}/{dur.toFixed(1)}s
         </span>
       </div>
       <div className="pv-foot">
-        <label className="check">
+        <label className="pill" title={synced ? 'Mengikuti setelan Panggung Utama — matikan untuk atur sendiri' : 'Setelan khusus untuk animasi ini'}>
+          <input
+            type="checkbox"
+            checked={synced}
+            onChange={(e) => updJob(job.id, e.target.checked ? {sync: true, cfg: {...mainCfg}} : {sync: false})}
+          />
+          <span>⇄ Utama</span>
+        </label>
+        <label className="pill" title="Ulangi otomatis">
           <input type="checkbox" checked={loop} onChange={(e) => setPref('loop', e.target.checked)} />
-          Ulangi
+          <span>⟲ Ulang</span>
         </label>
-        <label className="check">
+        <label className="pill" title="Putar otomatis">
           <input type="checkbox" checked={prefs.autoplay !== false} onChange={(e) => setPref('autoplay', e.target.checked)} />
-          Auto-play
+          <span>▶ Auto</span>
         </label>
-        <span className="pv-meta">
-          {w}×{h} · {fps}fps
+        <span className="pv-status">
+          {job.status === 'error' && (
+            <span className="fail" title="Render terakhir gagal">
+              ✗ gagal
+            </span>
+          )}
+          {job.status !== 'rendering' && lastFile && (
+            <button className="pv-file" title={'Unduh lagi: ' + lastFile.name} onClick={onDownload}>
+              ✓ {fmtSize(lastFile.size)}
+            </button>
+          )}
         </span>
       </div>
     </div>
@@ -600,6 +681,7 @@ export default function App() {
   const [jobs, setJobs] = useState(() =>
     lsGet('rsw-batch', []).map((j) => ({
       ...j,
+      sync: j.sync !== false,
       prefs: {loop: true, autoplay: true, ...(j.prefs || {})},
       status: j.status === 'rendering' ? 'idle' : j.status || 'idle',
       progress: 0,
@@ -618,7 +700,9 @@ export default function App() {
   const [batchContainer, setBatchContainer] = useState('mp4');
   const [dragOver, setDragOver] = useState(false);
   const [zoomId, setZoomId] = useState(null);
+  const [cfgOpenId, setCfgOpenId] = useState(null);
   const [stageScale, setStageScale] = useState(1);
+  const [batchInfo, setBatchInfo] = useState(null);
 
   const playerRef = useRef(null);
   const cnvRef = useRef(null);
@@ -941,7 +1025,17 @@ export default function App() {
       if (entries.length > 1) {
         setJobs((s) => [
           ...s,
-          ...entries.slice(1).map((en) => ({id: uid(), ...en, prefs: {loop: true, autoplay: pvAuto}, status: 'idle', progress: 0})),
+          ...entries.slice(1).map((en) => {
+            const {settled, ...clean} = en;
+            return {
+              id: uid(),
+              ...clean,
+              sync: !settled,
+              prefs: {loop: true, autoplay: pvAuto},
+              status: 'idle',
+              progress: 0,
+            };
+          }),
         ]);
       }
       setMsg(
@@ -963,7 +1057,7 @@ export default function App() {
     setMode('remotion');
     setCodes({...DEFAULT_CODE});
     setCfg({...DEFAULT_CFG});
-    setPrefs((p) => ({loop: true, autoDl: true, pvAuto: true, pvW: 300, pvDir: 'v', theme: p.theme}));
+    setPrefs((p) => ({loop: true, autoDl: true, pvAuto: true, pvW: 260, pvDir: 'v', pvWRev: 1, theme: p.theme}));
     setJobs([]);
     setAnimName('animasi');
     lastCfgRef.current = '';
@@ -971,33 +1065,97 @@ export default function App() {
     setMsg('Pengaturan direset ke awal (durasi default 5 detik).');
   };
 
+  const clearAll = () => {
+    if (!window.confirm('Bersihkan SEMUA data: pengaturan, kode editor, daftar batch, dan log ekspor? Tindakan ini tidak bisa dibatalkan.')) return;
+    ['rsw-mode', 'rsw-codes', 'rsw-cfg', 'rsw-batch', 'rsw-prefs'].forEach((k) => localStorage.removeItem(k));
+    store.clearRenders();
+    setMode('remotion');
+    setCodes({...DEFAULT_CODE});
+    setCfg({...DEFAULT_CFG});
+    setPrefs({loop: true, autoDl: true, pvAuto: true, pvW: 260, pvDir: 'v', pvWRev: 1, theme: 'dark'});
+    setJobs([]);
+    setLogs([]);
+    setAnimName('animasi');
+    lastCfgRef.current = '';
+    setErr('');
+    setTab('batch');
+    setMsg('Semua data dibersihkan — studio kembali ke kondisi awal (durasi default 5 detik).');
+  };
+
   const updJob = (id, patch) => setJobs((s) => s.map((x) => (x.id === id ? {...x, ...patch} : x)));
 
-  const saveRender = async (entry) => {
-    setLogs((l) => [entry, ...l].slice(0, 300));
-    store.putRender(entry).then(() => store.pruneRenders(300));
-    if (autoDl) downloadBlob(entry.blob, entry.name);
-    return (
-      'Selesai: ' + entry.name + ' (' + fmtSize(entry.size) + ')' + (entry.via ? ' · ' + entry.via : '') + (autoDl ? ' · terunduh' : ' · unduh lewat tab Log')
+  const effCfg = useCallback((j) => (j && j.sync === false ? sanitizeCfg(j.cfg) : cfg), [cfg]);
+
+  const editJobCfg = (id, k, v) => {
+    if (v === '') return;
+    setJobs((s) =>
+      s.map((x) => {
+        if (x.id !== id) return x;
+        const base = sanitizeCfg(x.cfg);
+        return {...x, sync: false, cfg: {...base, [k]: k === 'quality' ? String(v) : Number(v)}};
+      })
     );
   };
 
-  const runExport = async ({job, container}) => {
-    const j = job
-      ? {name: job.name, mode: job.mode, code: job.code, cfg: sanitizeCfg(job.cfg)}
-      : {name: animName, mode, code: codes[mode], cfg: sanitizeCfg(cfg)};
-    if (!j.code.trim()) {
-      setMsg('Kode kosong.');
-      return {ok: false};
+  const syncAllJobs = () => {
+    const base = sanitizeCfg(cfg);
+    setJobs((s) => s.map((x) => ({...x, sync: true, cfg: {...base}})));
+    setMsg('Semua pratinjau kini mengikuti setelan Panggung Utama: ' + base.width + '×' + base.height + ' @' + base.fps + 'fps · ' + base.dur.toFixed(1) + 's.');
+  };
+
+  const saveRender = async (entry, forceDl = false) => {
+    if (!entry.blob || !entry.size) throw new Error('Hasil render kosong (0 byte) — coba kualitas/resolusi lebih rendah.');
+    setLogs((l) => [entry, ...l].slice(0, 300));
+    store.putRender(entry).then(() => store.pruneRenders(300));
+    const dl = autoDl || forceDl;
+    if (dl) downloadBlob(entry.blob, entry.name);
+    return (
+      'Selesai: ' + entry.name + ' (' + fmtSize(entry.size) + ')' + (entry.via ? ' · ' + entry.via : '') + (dl ? ' · terunduh' : ' · unduh lewat tab Log')
+    );
+  };
+
+  const runExport = async ({job, container, overrideCfg, forceDl = false, keepPaused = false}) => {
+    let savedEntry = null;
+    const save = (entry) => {
+      savedEntry = entry;
+      return saveRender(entry, forceDl);
+    };
+    const src = job
+      ? {name: job.name, mode: job.mode, code: job.code}
+      : {name: animName, mode, code: codes[mode]};
+    const cfgSrc = job ? (overrideCfg || (job.sync === false ? job.cfg : cfg)) : cfg;
+    const j = {...src, cfg: sanitizeCfg(cfgSrc)};
+    if (job) {
+      const preErr = validateJobCode(j.mode, j.code);
+      if (preErr) {
+        updJob(job.id, {status: 'error', progress: 0});
+        setMsg('Gagal render "' + job.name + '": ' + preErr);
+        return {ok: false, error: preErr};
+      }
+      updJob(job.id, {cfg: j.cfg});
     }
-    if (j.mode !== 'html' && busyErr(j.mode)) {
-      setMsg('Perbaiki dulu error pada kode.');
-      return {ok: false};
+    if (!job) {
+      if (!j.code.trim()) {
+        setMsg('Kode kosong.');
+        return {ok: false};
+      }
+      if (j.mode !== 'html' && busyErr(j.mode)) {
+        setMsg('Perbaiki dulu error pada kode.');
+        return {ok: false};
+      }
     }
     const w = evenize(j.cfg.width);
     const h = evenize(j.cfg.height);
     const framesN = Math.min(MAX_FRAMES, Math.max(1, Math.round(j.cfg.dur * j.cfg.fps)));
     const label = job ? job.name : animName;
+    const resume = [];
+    for (const api of [...pvApi.current.values(), ...zoomApi.current.values()]) {
+      try {
+        if (api.isPlaying()) resume.push(api);
+        api.pause();
+      } catch (e) {}
+    }
+    if (job) updJob(job.id, {status: 'rendering', progress: 0});
     setBusy(job ? job.id : 'editor');
     setProg(0);
     setMsg('Merender ' + label + ' → ' + container.toUpperCase() + ' ' + w + '×' + h + ' @' + j.cfg.fps + 'fps…');
@@ -1035,7 +1193,7 @@ export default function App() {
           onProgress: (p) => onProgress(p.progress),
         });
         const blob = await res.getBlob();
-        const okMsg = await saveRender({
+        const okMsg = await save({
           id: uid(),
           name: slug(label) + '.' + container,
           at: Date.now(),
@@ -1068,7 +1226,7 @@ export default function App() {
           onProgress,
           onPhase,
         });
-        const okMsg = await saveRender({
+        const okMsg = await save({
           id: uid(),
           name: slug(label) + '.' + out.ext,
           at: Date.now(),
@@ -1085,17 +1243,34 @@ export default function App() {
         });
         setMsg(okMsg + (out.note ? ' · ' + out.note : '') + (provider.warn ? ' · ' + provider.warn : ''));
       }
-      if (job) updJob(job.id, {status: 'done', progress: 1});
+      if (job) {
+        updJob(job.id, {
+          status: 'done',
+          progress: 1,
+          lastRender: savedEntry ? {id: savedEntry.id, name: savedEntry.name, size: savedEntry.size} : job.lastRender,
+        });
+      }
       return {ok: true, aborted: false};
     } catch (e) {
       const aborted = (abortRef.current && abortRef.current.signal.aborted) || e.aborted;
-      if (job) updJob(job.id, {status: aborted ? 'idle' : 'error'});
-      setMsg(aborted ? 'Ekspor dibatalkan.' : 'Gagal ekspor: ' + (e.message || e));
-      return {ok: false, aborted: !!aborted};
+      if (job) updJob(job.id, {status: aborted ? 'idle' : 'error', progress: 0});
+      setMsg(
+        aborted
+          ? 'Ekspor dibatalkan.'
+          : 'Gagal render "' + label + '": ' + (e.message || e)
+      );
+      return {ok: false, aborted: !!aborted, error: e.message || String(e)};
     } finally {
       setProg(null);
       setBusy(null);
       abortRef.current = null;
+      if (!keepPaused) {
+        for (const api of resume) {
+          try {
+            api.play();
+          } catch (e) {}
+        }
+      }
     }
   };
 
@@ -1171,15 +1346,91 @@ export default function App() {
   jobsRef.current = jobs;
 
   const runBatch = async () => {
-    const list = jobsRef.current.map((j) => j.id);
-    for (const id of list) {
-      const j = jobsRef.current.find((x) => x.id === id);
-      if (!j) continue;
-      updJob(j.id, {status: 'rendering', progress: 0});
-      const r = await runExport({job: jobsRef.current.find((x) => x.id === id) || j, container: batchContainer});
-      if (r.aborted) break;
+    if (prog !== null || batchInfo) return;
+    const all = jobsRef.current;
+    const bad = all.filter((j) => validateJobCode(j.mode, j.code) !== '');
+    if (bad.length) setJobs((s) => s.map((x) => (bad.some((b) => b.id === x.id) ? {...x, status: 'error', progress: 0} : x)));
+    const list = all.filter((j) => !bad.includes(j));
+    const frozenMain = sanitizeCfg(cfg);
+    let aborted = false;
+    let ok = 0;
+    const resume = [...pvApi.current.values()].filter((api) => {
+      try {
+        return api.isPlaying();
+      } catch (e) {
+        return false;
+      }
+    });
+    for (let i = 0; i < list.length; i++) {
+      const j = list[i];
+      const live = jobsRef.current.find((x) => x.id === j.id);
+      if (!live) continue;
+      setBatchInfo({i: i + 1, n: list.length});
+      const overrideCfg = live.sync === false ? sanitizeCfg(live.cfg) : frozenMain;
+      // Unduhan per berkas saat batch hanya bila "unduh otomatis" aktif; sisanya lewat ZIP hasil.
+      const r = await runExport({job: live, container: batchContainer, overrideCfg, keepPaused: true});
+      if (r.ok) ok += 1;
+      if (r.aborted) {
+        aborted = true;
+        break;
+      }
+    }
+    setBatchInfo(null);
+    for (const api of resume) {
+      try {
+        api.play();
+      } catch (e) {}
+    }
+    if (!aborted) {
+      const failed = list.length - ok;
+      setMsg(
+        'Batch selesai: ' + ok + '/' + all.length + ' berhasil' +
+          (bad.length ? ' · ' + bad.length + ' dilewati (kode tidak valid)' : '') +
+          (failed ? ' · ' + failed + ' gagal' : '') +
+          (ok ? (autoDl ? ' · berkas terunduh otomatis.' : ' · unduh semua lewat "ZIP hasil".') : '.')
+      );
     }
   };
+
+  const fileFor = (j) => {
+    if (!j.lastRender) return null;
+    const l = logs.find((x) => x.id === j.lastRender.id);
+    return l && l.blob ? l : null;
+  };
+
+  const downloadLast = (j) => {
+    const l = fileFor(j);
+    if (!l) return setMsg('Berkas render "' + j.name + '" tidak ditemukan di log — render ulang.');
+    downloadBlob(l.blob, l.name);
+    setMsg('Diunduh: ' + l.name + ' (' + fmtSize(l.size) + ').');
+  };
+
+  const readyFiles = jobs.map(fileFor).filter(Boolean);
+
+  const downloadResultsZip = async () => {
+    const list = jobs.map(fileFor).filter(Boolean);
+    if (!list.length) return setMsg('Belum ada hasil render di Pratinjau Multi.');
+    if (list.length === 1) return downloadBlob(list[0].blob, list[0].name);
+    setMsg('Menyiapkan ZIP ' + list.length + ' video…');
+    try {
+      const files = {};
+      for (const l of list) {
+        let name = l.name;
+        let k = 2;
+        while (files[name]) name = l.name.replace(/(\.[^.]+)?$/, '-' + k++ + '$1');
+        // Video sudah terkompresi — simpan tanpa kompresi ulang agar cepat.
+        files[name] = [new Uint8Array(await l.blob.arrayBuffer()), {level: 0}];
+      }
+      const z = zipSync(files);
+      const total = list.reduce((a, b) => a + (b.size || 0), 0);
+      downloadBlob(new Blob([z], {type: 'application/zip'}), 'sa-animation-studio-video.zip');
+      setMsg('ZIP berisi ' + list.length + ' video (' + fmtSize(total) + ') terunduh.');
+    } catch (e) {
+      setMsg('Gagal membuat ZIP: ' + (e.message || e) + ' — unduh satu per satu lewat ✓ di kartu.');
+    }
+  };
+
+  const cancelRender = () => abortRef.current && abortRef.current.abort();
 
   const addCurrent = () => {
     if (!canExport) return setMsg('Perbaiki dulu error pada kode sebelum menambah ke batch.');
@@ -1189,6 +1440,7 @@ export default function App() {
       mode,
       code: codes[mode],
       cfg: sanitizeCfg(cfg),
+      sync: true,
       prefs: {loop: true, autoplay: pvAuto},
       status: 'idle',
       progress: 0,
@@ -1200,7 +1452,7 @@ export default function App() {
   const loadJob = (j) => {
     setMode(j.mode);
     setCodes((c) => ({...c, [j.mode]: j.code}));
-    setCfg(sanitizeCfg(j.cfg));
+    setCfg(sanitizeCfg(effCfg(j)));
     setAnimName(j.name);
     lastCfgRef.current = '';
     setMsg('Pratinjau batch "' + j.name + '" dimuat ke studio.');
@@ -1234,7 +1486,16 @@ export default function App() {
         let k = 2;
         while (names.has(name)) name = en.name + ' (' + k++ + ')';
         names.add(name);
-        return {id: uid(), ...en, name, prefs: {loop: true, autoplay: pvAuto}, status: 'idle', progress: 0};
+        const {settled, ...clean} = en;
+        return {
+          id: uid(),
+          ...clean,
+          name,
+          sync: !settled,
+          prefs: {loop: true, autoplay: pvAuto},
+          status: 'idle',
+          progress: 0,
+        };
       });
       return [...s, ...added];
     });
@@ -1254,9 +1515,12 @@ export default function App() {
     );
   };
 
+  const effJobsList = () => jobs.map((j) => ({...j, cfg: effCfg(j)}));
+
   const exportZip = () => {
-    const list = jobs.length
-      ? jobs
+    const effJobs = effJobsList();
+    const list = effJobs.length
+      ? effJobs
       : [{name: animName, mode, code: codes[mode], cfg: sanitizeCfg(cfg)}];
     const files = {};
     const used = new Set();
@@ -1276,7 +1540,7 @@ export default function App() {
 
   const exportBatch = (kind) => {
     const list = jobs.length
-      ? jobs
+      ? effJobsList()
       : [{name: animName, mode, code: codes[mode], cfg: sanitizeCfg(cfg)}];
     if (kind === 'csv') downloadText(toCSV(list), 'animasi-batch.csv', 'text/csv');
     else downloadText(toTXT(list), 'animasi-batch.txt', 'text/plain');
@@ -1322,10 +1586,9 @@ export default function App() {
     <div className="app">
       <header>
         <div className="brand">
+          <div className="logo" aria-hidden="true">SA</div>
           <div className="brand-text">
-            <h1>
-              SA Studio
-            </h1>
+            <h1>SA Animation Studio</h1>
             <span className="tagline">Pratinjau multi, batch, dan ekspor video — semuanya berjalan di browser</span>
           </div>
         </div>
@@ -1343,12 +1606,18 @@ export default function App() {
             <input type="file" accept={CODE_FILE_ACCEPT} hidden onChange={openFile} />
           </label>
           <button onClick={saveCode}>Simpan kode</button>
-          <button onClick={resetAll}>Reset pengaturan</button>
+          <button onClick={resetAll} title="Kembalikan pengaturan, kode, dan batch ke kondisi awal — log ekspor tetap">
+            Reset default
+          </button>
+          <button className="danger" onClick={clearAll} title="Hapus semua data: pengaturan, kode, batch, dan log ekspor">
+            Bersihkan semua
+          </button>
         </div>
       </header>
 
       <main>
         <section className="editor">
+          <span className="grp-title">Kode animasi</span>
           <div className="row mode-tabs">
             {MODES.map((m) => (
               <button key={m.id} className={mode === m.id ? 'chip active' : 'chip'} onClick={() => setMode(m.id)}>
@@ -1437,76 +1706,82 @@ export default function App() {
             </label>
           </div>
 
-          <div className="grid">
-            <label>
-              Ukuran
-              <select value={presetKey} onChange={applyPreset}>
-                {PRESETS.map((p) => (
-                  <option key={p[0]} value={p[0]}>
-                    {p[0]}
-                  </option>
-                ))}
-                {!presetKey && <option value="">Kustom</option>}
-              </select>
-            </label>
-            <label>
-              Lebar
-              <input type="number" min="16" max="8192" value={cfg.width} onChange={setCfgField('width')} />
-            </label>
-            <label>
-              Tinggi
-              <input type="number" min="16" max="8192" value={cfg.height} onChange={setCfgField('height')} />
-            </label>
-            <label>
-              FPS
-              <input type="number" min="1" max="120" value={cfg.fps} onChange={setCfgField('fps')} />
-            </label>
-            <label>
-              Durasi (detik)
-              <input type="number" step="0.5" min="0.1" max="300" value={cfg.dur} onChange={setCfgField('dur')} />
-            </label>
-            <label>
-              Kualitas
-              <select value={cfg.quality} onChange={setCfgField('quality')}>
-                {QUALS.map((q) => (
-                  <option key={q} value={q}>
-                    {q}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="grp">
+            <span className="grp-title">Pengaturan keluaran</span>
+            <div className="grid">
+              <label>
+                Ukuran
+                <select value={presetKey} onChange={applyPreset}>
+                  {PRESETS.map((p) => (
+                    <option key={p[0]} value={p[0]}>
+                      {p[0]}
+                    </option>
+                  ))}
+                  {!presetKey && <option value="">Kustom</option>}
+                </select>
+              </label>
+              <label>
+                Lebar
+                <input type="number" min="16" max="8192" value={cfg.width} onChange={setCfgField('width')} />
+              </label>
+              <label>
+                Tinggi
+                <input type="number" min="16" max="8192" value={cfg.height} onChange={setCfgField('height')} />
+              </label>
+              <label>
+                FPS
+                <input type="number" min="1" max="120" value={cfg.fps} onChange={setCfgField('fps')} />
+              </label>
+              <label>
+                Durasi (detik)
+                <input type="number" step="0.5" min="0.1" max="300" value={cfg.dur} onChange={setCfgField('dur')} />
+              </label>
+              <label>
+                Kualitas
+                <select value={cfg.quality} onChange={setCfgField('quality')}>
+                  {QUALS.map((q) => (
+                    <option key={q} value={q}>
+                      {q}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
 
-          <div className="row">
-            <button className="primary" disabled={!canExport} onClick={() => runExport({container: 'mp4'})}>
-              Ekspor MP4
-            </button>
-            <button disabled={!canExport} onClick={() => runExport({container: 'webm'})}>
-              Ekspor WebM
-            </button>
-            <button disabled={!canExport} onClick={exportPng}>
-              Ekspor PNG
-            </button>
-            {mode === 'html' && (
-              <button disabled={!codes.html.trim()} onClick={downloadHtml}>
-                Unduh HTML
+          <div className="grp">
+            <span className="grp-title">Ekspor</span>
+            <div className="row">
+              <button className="primary" disabled={!canExport} onClick={() => runExport({container: 'mp4'})}>
+                Ekspor MP4
               </button>
-            )}
-            <button className="ghost" disabled={!canExport} onClick={addCurrent}>
-              + Batch
-            </button>
-            {prog !== null && (
-              <button className="danger" onClick={() => abortRef.current && abortRef.current.abort()}>
-                Batalkan
+              <button disabled={!canExport} onClick={() => runExport({container: 'webm'})}>
+                Ekspor WebM
               </button>
-            )}
-          </div>
+              <button disabled={!canExport} onClick={exportPng}>
+                Ekspor PNG
+              </button>
+              {mode === 'html' && (
+                <button disabled={!codes.html.trim()} onClick={downloadHtml}>
+                  Unduh HTML
+                </button>
+              )}
+              <button className="ghost" disabled={!canExport} onClick={addCurrent}>
+                + Batch
+              </button>
+              {prog !== null && (
+                <button className="danger" onClick={() => abortRef.current && abortRef.current.abort()}>
+                  Batalkan
+                </button>
+              )}
+            </div>
 
-          {prog !== null && <progress value={prog} max={1} />}
-          <label className="check auto-dl">
-            <input type="checkbox" checked={autoDl} onChange={(e) => setPrefs((p) => ({...p, autoDl: e.target.checked}))} />
-            Unduh otomatis setelah render
-          </label>
+            {prog !== null && <progress value={prog} max={1} />}
+            <label className="check auto-dl">
+              <input type="checkbox" checked={autoDl} onChange={(e) => setPrefs((p) => ({...p, autoDl: e.target.checked}))} />
+              Unduh otomatis setelah render
+            </label>
+          </div>
           {msg && <p className="msg">{msg}</p>}
         </section>
       </main>
@@ -1514,69 +1789,92 @@ export default function App() {
       {jobs.length > 0 && (
         <section className="previews">
           <div className="previews-head">
-            <h2>Pratinjau Multi · {jobs.length}</h2>
-            <span className="hint-inline">
-              Kartu pratinjau tertaut langsung dengan daftar batch di bawah — tambah/hapus/rename di satu tempat tersinkron otomatis.
+            <h2>
+              Pratinjau Multi <span className="count">{jobs.length}</span>
+            </h2>
+            <span
+              className="info-dot"
+              title='Pratinjau mengikuti setelan Panggung Utama (resolusi, fps, durasi). Matikan "⇄ Utama" pada kartu untuk setelan khusus. Kartu tertaut dengan daftar batch di bawah.'
+            >
+              ⓘ
             </span>
+            {batchInfo && (
+              <span className="batch-pill">
+                Render {batchInfo.i}/{batchInfo.n}
+                {prog !== null ? ' · ' + Math.round(prog * 100) + '%' : ''}
+              </span>
+            )}
           </div>
           <div className="pv-toolbar">
+            <div className="seg" role="group" aria-label="Kontrol semua pratinjau">
+              <button title="Putar semua" aria-label="Putar semua" onClick={() => pvApi.current.forEach((api) => api.play())}>
+                ▶
+              </button>
+              <button title="Jeda semua" aria-label="Jeda semua" onClick={() => pvApi.current.forEach((api) => api.pause())}>
+                ⏸
+              </button>
+              <button title="Stop semua" aria-label="Stop semua" onClick={() => pvApi.current.forEach((api) => api.stop())}>
+                ⏹
+              </button>
+              <button title="Ulangi semua dari awal" aria-label="Ulangi semua" onClick={() => pvApi.current.forEach((api) => api.restart())}>
+                ↺
+              </button>
+            </div>
             <button
-              onClick={() => {
-                for (const api of pvApi.current.values()) api.play();
-              }}
-              title="Putar semua pratinjau"
+              className="tb-btn"
+              onClick={syncAllJobs}
+              disabled={!jobs.some((x) => x.sync === false)}
+              title="Buat semua pratinjau mengikuti setelan Panggung Utama (lebar, tinggi, fps, durasi, kualitas)"
             >
-              ▶ Semua
+              ⇄ Sinkron
             </button>
-            <button
-              onClick={() => {
-                for (const api of pvApi.current.values()) api.pause();
-              }}
-              title="Jeda semua pratinjau"
-            >
-              ⏸ Jeda semua
-            </button>
-            <button
-              onClick={() => {
-                for (const api of pvApi.current.values()) api.stop();
-              }}
-              title="Stop semua pratinjau"
-            >
-              ⏹ Stop semua
-            </button>
-            <span className="sep" />
-            <label className="check">
+            <label className="pill" title="Auto-play semua pratinjau">
               <input type="checkbox" checked={pvAuto} onChange={(e) => setPrefs((p) => ({...p, pvAuto: e.target.checked}))} />
-              Auto-play
+              <span>▶ Auto</span>
             </label>
+            <span className="sep" />
+            <div className="tb-render">
+              <select value={batchContainer} onChange={(e) => setBatchContainer(e.target.value)} aria-label="Format video" disabled={prog !== null}>
+                <option value="mp4">MP4</option>
+                <option value="webm">WebM</option>
+              </select>
+              {prog !== null ? (
+                <button className="danger tb-btn" onClick={cancelRender}>
+                  ⏹ Batalkan
+                </button>
+              ) : (
+                <button className="primary tb-btn" onClick={runBatch} title="Render semua pratinjau berurutan">
+                  ▶ Render semua
+                </button>
+              )}
+              <button
+                className="tb-btn"
+                disabled={!readyFiles.length || prog !== null}
+                onClick={downloadResultsZip}
+                title="Unduh semua hasil render terakhir dari pratinjau (ZIP)"
+              >
+                ⬇ ZIP hasil{readyFiles.length ? ' · ' + readyFiles.length : ''}
+              </button>
+            </div>
             <div className="layout-ctl">
               <div className="seg">
-                <button
-                  className={pvDir === 'v' ? 'active' : ''}
-                  onClick={() => setPrefs((p) => ({...p, pvDir: 'v'}))}
-                  title="Tata grid vertikal"
-                >
-                  ⬍ Grid
+                <button className={pvDir === 'v' ? 'active' : ''} onClick={() => setPrefs((p) => ({...p, pvDir: 'v'}))} title="Grid vertikal">
+                  ▦
                 </button>
-                <button
-                  className={pvDir === 'h' ? 'active' : ''}
-                  onClick={() => setPrefs((p) => ({...p, pvDir: 'h'}))}
-                  title="Tata strip horizontal (geser)"
-                >
-                  ⬌ Strip
+                <button className={pvDir === 'h' ? 'active' : ''} onClick={() => setPrefs((p) => ({...p, pvDir: 'h'}))} title="Strip horizontal (geser)">
+                  ⬌
                 </button>
               </div>
-              <label>
-                Ukuran kartu
-                <input
-                  type="range"
-                  min="220"
-                  max="640"
-                  step="20"
-                  value={pvW}
-                  onChange={(e) => setPrefs((p) => ({...p, pvW: Math.min(640, Math.max(220, Number(e.target.value) || 260))}))}
-                />
-              </label>
+              <input
+                type="range"
+                min="220"
+                max="640"
+                step="20"
+                value={pvW}
+                title="Ukuran kartu"
+                aria-label="Ukuran kartu"
+                onChange={(e) => setPrefs((p) => ({...p, pvW: Math.min(640, Math.max(220, Number(e.target.value) || 260))}))}
+              />
             </div>
           </div>
           <div className={'previews-grid' + (pvDir === 'h' ? ' strip' : '')} style={{'--pv-w': pvW + 'px'}}>
@@ -1584,9 +1882,14 @@ export default function App() {
               <PreviewCard
                 key={j.id}
                 job={j}
+                mainCfg={cfg}
                 autoplayAll={pvAuto}
+                container={batchContainer}
                 onDelete={() => delJob(j.id)}
-                onRender={() => runExport({job: j, container: batchContainer})}
+                onRender={() => runExport({job: j, container: batchContainer, forceDl: true})}
+                onCancel={busy === j.id ? cancelRender : null}
+                onDownload={() => downloadLast(j)}
+                lastFile={fileFor(j)}
                 onZoom={() => setZoomId(j.id)}
                 renderBusy={prog !== null}
                 updJob={updJob}
@@ -1601,7 +1904,7 @@ export default function App() {
         <div className="zoom-backdrop" onClick={() => setZoomId(null)}>
           <div
             className="zoom-modal"
-            style={{'--zar': zoomJob.cfg.width + ' / ' + zoomJob.cfg.height}}
+            style={{'--zar': effCfg(zoomJob).width + ' / ' + effCfg(zoomJob).height}}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="zoom-head">
@@ -1612,12 +1915,17 @@ export default function App() {
             </div>
             <PreviewCard
               job={zoomJob}
+              mainCfg={cfg}
               autoplayAll={pvAuto}
+              container={batchContainer}
               onDelete={() => {
                 delJob(zoomJob.id);
                 setZoomId(null);
               }}
-              onRender={() => runExport({job: zoomJob, container: batchContainer})}
+              onRender={() => runExport({job: zoomJob, container: batchContainer, forceDl: true})}
+              onCancel={busy === zoomJob.id ? cancelRender : null}
+              onDownload={() => downloadLast(zoomJob)}
+              lastFile={fileFor(zoomJob)}
               renderBusy={prog !== null}
               updJob={updJob}
               apiRegistry={zoomApi}
@@ -1683,39 +1991,117 @@ export default function App() {
                 </select>
                 <button
                   className="primary"
-                  disabled={!jobs.length || prog !== null}
-                  onClick={prog !== null ? () => abortRef.current && abortRef.current.abort() : runBatch}
+                  disabled={!jobs.length}
+                  onClick={prog !== null ? cancelRender : runBatch}
                 >
                   {prog !== null ? '⏹ Batalkan semua' : '▶ Render semua'}
                 </button>
               </div>
               <p className="hint">
                 Tarik-lepas file kode ke panel ini: JSX/TSX (Remotion), JS/TS (Canvas), HTML/CSS/SVG, atau CSV/TXT berisi banyak
-                animasi. Klik "Pratinjau" untuk memuat job ke panggung.
+                animasi. Centang "ikut utama" agar resolusi/fps/durasi mengikuti Panggung Utama, atau ⚙ untuk atur sendiri per animasi.
               </p>
             </div>
             <ul className="jobs">
-              {jobs.map((j) => (
-                <li key={j.id}>
-                  <input className="job-name" value={j.name} onChange={(e) => updJob(j.id, {name: e.target.value})} />
-                  <span className="chip mode">{(MODES.find((m) => m.id === j.mode) || {}).label || j.mode}</span>
-                  <span className="meta">
-                    {j.cfg.width}×{j.cfg.height} · {j.cfg.fps}fps · {Number(j.cfg.dur).toFixed(1)}s
-                  </span>
-                  {j.status === 'rendering' && <progress value={j.progress || 0} max={1} />}
-                  {j.status === 'done' && <span className="ok">✓</span>}
-                  {j.status === 'error' && <span className="fail">✗</span>}
-                  <div className="row">
-                    <button onClick={() => loadJob(j)}>Pratinjau</button>
-                    <button disabled={prog !== null} onClick={() => runExport({job: j, container: batchContainer})}>
-                      Render
-                    </button>
-                    <button className="danger" onClick={() => delJob(j.id)}>
-                      Hapus
-                    </button>
-                  </div>
-                </li>
-              ))}
+              {jobs.map((j) => {
+                const eff = effCfg(j);
+                const synced = j.sync !== false;
+                return (
+                  <li key={j.id}>
+                    <label
+                      className="check sync-ck"
+                      title={synced ? 'Mengikuti setelan Panggung Utama' : 'Setelan khusus untuk item ini'}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={synced}
+                        onChange={(e) => updJob(j.id, e.target.checked ? {sync: true, cfg: sanitizeCfg(cfg)} : {sync: false})}
+                      />
+                    </label>
+                    <input className="job-name" value={j.name} onChange={(e) => updJob(j.id, {name: e.target.value})} />
+                    <span className="chip mode">{(MODES.find((m) => m.id === j.mode) || {}).label || j.mode}</span>
+                    <span className="meta">
+                      {!synced && <b className="kustom-tag">kustom</b>}
+                      {eff.width}×{eff.height} · {eff.fps}fps · {Number(eff.dur).toFixed(1)}s
+                    </span>
+                    {j.status === 'rendering' && <progress value={j.progress || 0} max={1} />}
+                    {j.status === 'done' && <span className="ok" title="Berhasil dirender">✓</span>}
+                    {j.status === 'error' && <span className="fail" title="Gagal dirender">✗</span>}
+                    <div className="row">
+                      <button onClick={() => loadJob(j)} title="Muat ke editor & Panggung Utama">
+                        Muat
+                      </button>
+                      <button
+                        className={cfgOpenId === j.id ? 'gear-btn on' : 'gear-btn'}
+                        title="Pengaturan khusus item ini (resolusi, fps, durasi, kualitas)"
+                        onClick={() => setCfgOpenId(cfgOpenId === j.id ? null : j.id)}
+                      >
+                        ⚙
+                      </button>
+                      <button disabled={prog !== null} onClick={() => runExport({job: j, container: batchContainer, forceDl: true})}>
+                        Render
+                      </button>
+                      <button className="danger" onClick={() => delJob(j.id)} title="Hapus dari pratinjau & playlist">
+                        Hapus
+                      </button>
+                    </div>
+                    {cfgOpenId === j.id && (
+                      <div className="job-cfg">
+                        {synced ? (
+                          <p className="hint-inline">Item ini mengikuti setelan Panggung Utama ({cfg.width}×{cfg.height} @ {cfg.fps}fps · {Number(cfg.dur).toFixed(1)}s). Mengubah nilai di bawah akan memisahkannya dari setelan utama.</p>
+                        ) : (
+                          <p className="hint-inline">Setelan khusus aktif. Centang "ikut utama" untuk menyinkronkan kembali.</p>
+                        )}
+                        <div className="grid tight">
+                          <label>
+                            Lebar
+                            <input
+                              type="number"
+                              min="16"
+                              max="8192"
+                              value={j.cfg.width}
+                              onChange={(e) => editJobCfg(j.id, 'width', e.target.value)}
+                              onBlur={(e) => editJobCfg(j.id, 'width', e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            Tinggi
+                            <input
+                              type="number"
+                              min="16"
+                              max="8192"
+                              value={j.cfg.height}
+                              onChange={(e) => editJobCfg(j.id, 'height', e.target.value)}
+                              onBlur={(e) => editJobCfg(j.id, 'height', e.target.value)}
+                            />
+                          </label>
+                          <label>
+                            FPS
+                            <input type="number" min="1" max="120" value={j.cfg.fps} onChange={(e) => editJobCfg(j.id, 'fps', e.target.value)} />
+                          </label>
+                          <label>
+                            Durasi (detik)
+                            <input type="number" step="0.5" min="0.1" max="300" value={j.cfg.dur} onChange={(e) => editJobCfg(j.id, 'dur', e.target.value)} />
+                          </label>
+                          <label>
+                            Kualitas
+                            <select value={j.cfg.quality} onChange={(e) => editJobCfg(j.id, 'quality', e.target.value)}>
+                              {QUALS.map((q) => (
+                                <option key={q} value={q}>
+                                  {q}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button className="ghost" onClick={() => updJob(j.id, {sync: true, cfg: sanitizeCfg(cfg)})}>
+                            Pakai setelan utama
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
             {!jobs.length && <p className="hint-empty">Belum ada job batch. Tambahkan dari editor atau impor CSV/TXT (bisa banyak file sekaligus).</p>}
           </>
@@ -1760,7 +2146,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span>SA Studio · render, batch, dan ekspor video berjalan sepenuhnya di browser — tanpa server</span>
+        <span>SA Animation Studio · render, batch, dan ekspor video berjalan sepenuhnya di browser — tanpa server</span>
       </footer>
     </div>
   );

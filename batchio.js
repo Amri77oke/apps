@@ -87,6 +87,7 @@ export function parseCSV(text) {
         code,
       })
     );
+    out[out.length - 1].settled = true;
   }
   return out;
 }
@@ -138,6 +139,7 @@ export function parseTXT(text) {
         code,
       })
     );
+    out[out.length - 1].settled = true;
   }
   return out;
 }
