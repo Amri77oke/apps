@@ -142,8 +142,8 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
   const prefs = job.prefs || {};
   const loop = prefs.loop !== false;
   const autoplayInit = prefs.autoplay !== false && autoplayAll;
-  const w = Math.max(2, Math.round(cfg.width || 1280));
-  const h = Math.max(2, Math.round(cfg.height || 720));
+  const w = evenize(Math.max(2, Math.round(cfg.width || 1280)));
+  const h = evenize(Math.max(2, Math.round(cfg.height || 720)));
   const fps = Math.max(1, cfg.fps || 30);
   const dur = Math.max(0.1, cfg.dur || 5);
   const framesN = Math.min(MAX_FRAMES, Math.max(1, Math.round(dur * fps)));
@@ -515,6 +515,7 @@ function PreviewCard({job, autoplayAll, onDelete, onRender, onZoom, renderBusy, 
               loop={loop}
               style={{width: '100%', height: '100%'}}
               acknowledgeRemotionLicense
+              errorFallback={({error}) => <div className="pv-err">{error.message}</div>}
             />
           </div>
         )}
@@ -597,7 +598,12 @@ export default function App() {
     return p;
   });
   const [jobs, setJobs] = useState(() =>
-    lsGet('rsw-batch', []).map((j) => ({...j, prefs: {loop: true, autoplay: true, ...(j.prefs || {})}}))
+    lsGet('rsw-batch', []).map((j) => ({
+      ...j,
+      prefs: {loop: true, autoplay: true, ...(j.prefs || {})},
+      status: j.status === 'rendering' ? 'idle' : j.status || 'idle',
+      progress: 0,
+    }))
   );
   const [logs, setLogs] = useState([]);
   const [animName, setAnimName] = useState('animasi');
@@ -645,11 +651,25 @@ export default function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  const exporting = prog !== null;
+  useEffect(() => {
+    if (!exporting) return;
+    const onUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onUnload);
+    return () => window.removeEventListener('beforeunload', onUnload);
+  }, [exporting]);
+
   useEffect(() => lsSet('rsw-mode', mode), [mode]);
   useEffect(() => lsSet('rsw-codes', codes), [codes]);
   useEffect(() => lsSet('rsw-cfg', cfg), [cfg]);
   useEffect(() => lsSet('rsw-prefs', prefs), [prefs]);
-  useEffect(() => lsSet('rsw-batch', jobs), [jobs]);
+  useEffect(() => {
+    const id = setTimeout(() => lsSet('rsw-batch', jobs.map(({progress, ...j}) => j)), 400);
+    return () => clearTimeout(id);
+  }, [jobs]);
 
   useEffect(() => {
     store.getRenders().then((l) => {
@@ -763,8 +783,8 @@ export default function App() {
     if (mode !== 'canvas') return;
     const c = cnvRef.current;
     if (!c) return;
-    c.width = cfg.width;
-    c.height = cfg.height;
+    c.width = evenize(cfg.width);
+    c.height = evenize(cfg.height);
     const ctx = c.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
@@ -921,14 +941,14 @@ export default function App() {
       if (entries.length > 1) {
         setJobs((s) => [
           ...s,
-          ...entries.slice(1).map((en) => ({id: uid(), ...en, status: 'idle', progress: 0})),
+          ...entries.slice(1).map((en) => ({id: uid(), ...en, prefs: {loop: true, autoplay: pvAuto}, status: 'idle', progress: 0})),
         ]);
       }
       setMsg(
         '"' + f.name + '" dimuat ke editor (' + first.mode + ')' +
           (entries.length > 1 ? ' · ' + (entries.length - 1) + ' entri lain masuk Batch.' : '.')
       );
-    });
+    }).catch(() => setMsg('Gagal membaca file "' + f.name + '".'));
   };
 
   const saveCode = () => {
@@ -955,9 +975,9 @@ export default function App() {
 
   const saveRender = async (entry) => {
     setLogs((l) => [entry, ...l].slice(0, 300));
-    store.putRender(entry);
+    store.putRender(entry).then(() => store.pruneRenders(300));
     if (autoDl) downloadBlob(entry.blob, entry.name);
-    setMsg(
+    return (
       'Selesai: ' + entry.name + ' (' + fmtSize(entry.size) + ')' + (entry.via ? ' · ' + entry.via : '') + (autoDl ? ' · terunduh' : ' · unduh lewat tab Log')
     );
   };
@@ -987,9 +1007,17 @@ export default function App() {
       setMsg('Frame dibatasi ke ' + MAX_FRAMES + ' (kurangi durasi/FPS untuk hasil penuh).');
     }
     abortRef.current = new AbortController();
+    let lastProgAt = 0;
     const onProgress = (p) => {
-      setProg(p);
-      if (job) updJob(job.id, {progress: p});
+      const now = performance.now();
+      if (p >= 1 || lastProgAt === 0 || now - lastProgAt >= 80) {
+        lastProgAt = now;
+        setProg(p);
+        if (job) updJob(job.id, {progress: p});
+      }
+    };
+    const onPhase = (ph) => {
+      if (ph === 'finalize') setMsg('Menyusun berkas ' + label + '… (muxing)');
     };
     try {
       if (j.mode === 'remotion') {
@@ -1007,7 +1035,7 @@ export default function App() {
           onProgress: (p) => onProgress(p.progress),
         });
         const blob = await res.getBlob();
-        await saveRender({
+        const okMsg = await saveRender({
           id: uid(),
           name: slug(label) + '.' + container,
           at: Date.now(),
@@ -1019,8 +1047,10 @@ export default function App() {
           dur: framesN / j.cfg.fps,
           quality: j.cfg.quality,
           ext: container,
+          via: 'remotion ' + videoCodec,
           blob,
         });
+        setMsg(okMsg);
       } else {
         const provider =
           j.mode === 'canvas'
@@ -1036,8 +1066,9 @@ export default function App() {
           provider,
           signal: abortRef.current.signal,
           onProgress,
+          onPhase,
         });
-        await saveRender({
+        const okMsg = await saveRender({
           id: uid(),
           name: slug(label) + '.' + out.ext,
           at: Date.now(),
@@ -1052,7 +1083,7 @@ export default function App() {
           via: out.via,
           blob: out.blob,
         });
-        if (provider.warn) setMsg(provider.warn);
+        setMsg(okMsg + (out.note ? ' · ' + out.note : '') + (provider.warn ? ' · ' + provider.warn : ''));
       }
       if (job) updJob(job.id, {status: 'done', progress: 1});
       return {ok: true, aborted: false};
@@ -1085,20 +1116,22 @@ export default function App() {
         const composition = {id: 'main', component: compiled.comp, durationInFrames: framesOut, fps: cfg.fps, width: w, height: h};
         const r = await renderStillOnWeb({composition, frame: fIdx});
         const blob = await r.blob();
-        await saveRender({
-          id: uid(),
-          name: slug(animName) + '-frame' + fIdx + '.png',
-          at: Date.now(),
-          size: blob.size,
-          mode,
-          w,
-          h,
-          fps: cfg.fps,
-          dur: 0,
-          quality: cfg.quality,
-          ext: 'png',
-          blob,
-        });
+        setMsg(
+          await saveRender({
+            id: uid(),
+            name: slug(animName) + '-frame' + fIdx + '.png',
+            at: Date.now(),
+            size: blob.size,
+            mode,
+            w,
+            h,
+            fps: cfg.fps,
+            dur: 0,
+            quality: cfg.quality,
+            ext: 'png',
+            blob,
+          })
+        );
       } else {
         if (mode === 'canvas' && !compiled.fn) return setMsg('Perbaiki dulu error pada kode.');
         fIdx = Math.round(tSec * cfg.fps);
@@ -1107,20 +1140,22 @@ export default function App() {
             ? makeCanvasProvider({code: codes.canvas, width: w, height: h, fps: cfg.fps})
             : makeHtmlProvider({code: codes.html, width: w, height: h, fps: cfg.fps});
         const blob = await renderPngFrame({width: w, height: h, fps: cfg.fps, provider, frame: fIdx});
-        await saveRender({
-          id: uid(),
-          name: slug(animName) + '-frame' + fIdx + '.png',
-          at: Date.now(),
-          size: blob.size,
-          mode,
-          w,
-          h,
-          fps: cfg.fps,
-          dur: 0,
-          quality: cfg.quality,
-          ext: 'png',
-          blob,
-        });
+        setMsg(
+          await saveRender({
+            id: uid(),
+            name: slug(animName) + '-frame' + fIdx + '.png',
+            at: Date.now(),
+            size: blob.size,
+            mode,
+            w,
+            h,
+            fps: cfg.fps,
+            dur: 0,
+            quality: cfg.quality,
+            ext: 'png',
+            blob,
+          })
+        );
       }
     } catch (e) {
       setMsg('Gagal ekspor PNG: ' + (e.message || e));
@@ -1132,10 +1167,16 @@ export default function App() {
     setMsg('HTML mandiri terunduh — berisi pemutar ▶ ⏸ ↺ bawaan.');
   };
 
+  const jobsRef = useRef(jobs);
+  jobsRef.current = jobs;
+
   const runBatch = async () => {
-    for (const j of jobs) {
+    const list = jobsRef.current.map((j) => j.id);
+    for (const id of list) {
+      const j = jobsRef.current.find((x) => x.id === id);
+      if (!j) continue;
       updJob(j.id, {status: 'rendering', progress: 0});
-      const r = await runExport({job: j, container: batchContainer});
+      const r = await runExport({job: jobsRef.current.find((x) => x.id === id) || j, container: batchContainer});
       if (r.aborted) break;
     }
   };
@@ -1349,8 +1390,8 @@ export default function App() {
                 component={compiled.comp}
                 durationInFrames={framesOut}
                 fps={cfg.fps}
-                compositionWidth={cfg.width}
-                compositionHeight={cfg.height}
+                compositionWidth={evenize(cfg.width)}
+                compositionHeight={evenize(cfg.height)}
                 loop={loop}
                 autoPlay
                 style={{width: '100%', height: '100%'}}
@@ -1359,7 +1400,7 @@ export default function App() {
               />
             )}
             {mode === 'remotion' && !compiled.comp && <div className="stage-empty">Perbaiki error kode untuk melihat pratinjau</div>}
-            {mode === 'canvas' && <canvas ref={cnvRef} width={cfg.width} height={cfg.height} />}
+            {mode === 'canvas' && <canvas ref={cnvRef} width={evenize(cfg.width)} height={evenize(cfg.height)} />}
             {mode === 'html' && (
               <iframe
                 ref={iframeRef}

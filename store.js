@@ -43,3 +43,45 @@ export const putRender = (entry) => tx('readwrite', (s) => s.put(entry));
 export const getRenders = () => tx('readonly', (s) => s.getAll());
 export const deleteRender = (id) => tx('readwrite', (s) => s.delete(id));
 export const clearRenders = () => tx('readwrite', (s) => s.clear());
+
+export async function pruneRenders(keep = 300) {
+  const db = await open().catch(() => null);
+  if (!db) return;
+  const entries = await new Promise((res) => {
+    try {
+      const t = db.transaction(STORE, 'readonly');
+      const out = [];
+      const rq = t.objectStore(STORE).openCursor();
+      rq.onsuccess = () => {
+        const c = rq.result;
+        if (c) {
+          const v = c.value || {};
+          out.push({id: v.id, at: v.at || 0});
+          c.continue();
+        } else res(out);
+      };
+      rq.onerror = () => res([]);
+    } catch (e) {
+      res([]);
+    }
+  });
+  if (entries.length <= keep) return;
+  const victims = entries
+    .sort((a, b) => a.at - b.at)
+    .slice(0, entries.length - keep)
+    .map((e) => e.id)
+    .filter(Boolean);
+  if (!victims.length) return;
+  await new Promise((res) => {
+    try {
+      const t = db.transaction(STORE, 'readwrite');
+      const s = t.objectStore(STORE);
+      for (const id of victims) s.delete(id);
+      t.oncomplete = () => res(true);
+      t.onerror = () => res(false);
+      t.onabort = () => res(false);
+    } catch (e) {
+      res(false);
+    }
+  });
+}

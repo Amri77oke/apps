@@ -71,6 +71,13 @@ export function compileCanvas(code) {
   return {fn, config: mod.exports.config || {}};
 }
 
+export function markUserCodeError(err, context) {
+  const e = err instanceof Error ? err : new Error(String((err && err.message) || err));
+  e.userCode = true;
+  e.message = (context ? context + ': ' : '') + e.message;
+  return e;
+}
+
 export function makeCanvasProvider({code, width, height, fps}) {
   const {fn} = compileCanvas(code);
   return {
@@ -83,6 +90,8 @@ export function makeCanvasProvider({code, width, height, fps}) {
       try {
         if (i === 0) ctx.clearRect(0, 0, cnv.width, cnv.height);
         fn(ctx, i / fps, cnv.width, cnv.height, i, fps, FX);
+      } catch (err) {
+        throw markUserCodeError(err, 'Kode animasi gagal di frame ' + i);
       } finally {
         ctx.restore();
       }
@@ -91,7 +100,7 @@ export function makeCanvasProvider({code, width, height, fps}) {
   };
 }
 
-async function encodeWithMediabunny({width, height, fps, frames, container, codec, quality, provider, signal, onProgress}) {
+async function encodeWithMediabunny({width, height, fps, frames, container, codec, quality, provider, signal, onProgress, onPhase}) {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -106,13 +115,22 @@ async function encodeWithMediabunny({width, height, fps, frames, container, code
   });
   output.addVideoTrack(source, {frameRate: fps});
   await output.start();
-  for (let i = 0; i < frames; i++) {
-    checkAbort(signal);
-    await provider.renderFrame(i, canvas);
-    await source.add(i / fps, 1 / fps);
-    if (onProgress) onProgress((i + 1) / frames);
+  try {
+    if (onPhase) onPhase('render');
+    for (let i = 0; i < frames; i++) {
+      checkAbort(signal);
+      await provider.renderFrame(i, canvas);
+      await source.add(i / fps, 1 / fps);
+      if (onProgress) onProgress((i + 1) / frames);
+    }
+    if (onPhase) onPhase('finalize');
+    await output.finalize();
+  } catch (err) {
+    try {
+      await output.cancel();
+    } catch (e) {}
+    throw err;
   }
-  await output.finalize();
   const buffer = output.target.buffer;
   return {
     blob: new Blob([buffer], {type: container === 'mp4' ? 'video/mp4' : 'video/webm'}),
@@ -121,7 +139,7 @@ async function encodeWithMediabunny({width, height, fps, frames, container, code
   };
 }
 
-async function encodeWithMediaRecorder({width, height, fps, frames, container, quality, provider, signal, onProgress}) {
+async function encodeWithMediaRecorder({width, height, fps, frames, container, quality, provider, signal, onProgress, onPhase}) {
   const mimes =
     container === 'mp4'
       ? ['video/mp4;codecs=avc1.640034', 'video/mp4;codecs=avc1.4d0034', 'video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm']
@@ -134,12 +152,21 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
   const stream = canvas.captureStream(fps);
   const rec = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: bitrateFor(quality, width, height, fps)});
   const chunks = [];
+  let recErr = null;
   rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
-  const stopped = new Promise((res) => {
-    rec.onstop = res;
+  const stopped = new Promise((res, rej) => {
+    rec.onstop = () => (recErr ? rej(recErr) : res());
+    rec.onerror = (e) => {
+      recErr = (e && e.error) || new Error('Perekaman MediaRecorder gagal.');
+      try {
+        if (rec.state !== 'inactive') rec.stop();
+      } catch (err) {}
+    };
   });
   rec.start(1000);
   const frameMs = 1000 / fps;
+  const wallStart = performance.now();
+  if (onPhase) onPhase('render');
   try {
     for (let i = 0; i < frames; i++) {
       checkAbort(signal);
@@ -151,26 +178,33 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
     }
   } finally {
     await new Promise((r) => setTimeout(r, 150));
-    if (rec.state !== 'inactive') rec.stop();
+    try {
+      if (rec.state !== 'inactive') rec.stop();
+    } catch (e) {}
+    try {
+      for (const t of stream.getVideoTracks()) t.stop();
+    } catch (e) {}
     await stopped;
   }
   const type = mime.split(';')[0];
-  return {blob: new Blob(chunks, {type}), ext: type.includes('mp4') ? 'mp4' : 'webm', via: 'mediarecorder'};
+  const wall = (performance.now() - wallStart) / 1000;
+  const note = wall > (frames / fps) * 1.15 && frames > 1 ? ' (durasi riil ' + wall.toFixed(1) + 's — render melambat dari waktu-nyata)' : '';
+  return {blob: new Blob(chunks, {type}), ext: type.includes('mp4') ? 'mp4' : 'webm', via: 'mediarecorder', note};
 }
 
-export async function encodeFrames({width, height, fps, frames, container, quality, provider, signal, onProgress}) {
+export async function encodeFrames({width, height, fps, frames, container, quality, provider, signal, onProgress, onPhase}) {
   await provider.init();
   try {
     const codec = await pickCodec(container, width, height, fps, quality);
     if (codec) {
       try {
-        return await encodeWithMediabunny({width, height, fps, frames, container, codec, quality, provider, signal, onProgress});
+        return await encodeWithMediabunny({width, height, fps, frames, container, codec, quality, provider, signal, onProgress, onPhase});
       } catch (err) {
-        if ((signal && signal.aborted) || err.aborted) throw err;
+        if ((signal && signal.aborted) || err.aborted || err.userCode) throw err;
         console.warn('WebCodecs gagal, beralih ke MediaRecorder:', err);
       }
     }
-    return await encodeWithMediaRecorder({width, height, fps, frames, container, quality, provider, signal, onProgress});
+    return await encodeWithMediaRecorder({width, height, fps, frames, container, quality, provider, signal, onProgress, onPhase});
   } finally {
     provider.destroy();
   }
