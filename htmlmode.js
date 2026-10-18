@@ -103,11 +103,19 @@ window.__rsw = {
   setDur: function (d) { S.dur = d; },
   setLoop: function (b) { S.loop = !!b; }
 };
+var POST_TARGET = (function () {
+  try { var o = location && location.origin; return o && o !== 'null' ? o : '*'; } catch (e) { return '*'; }
+})();
+function postToParent(msg) {
+  try { parent.postMessage(msg, POST_TARGET); } catch (e) {
+    try { parent.postMessage(msg, '*'); } catch (x) {}
+  }
+}
 window.addEventListener('error', function (e) {
-  try { parent.postMessage({ rsw: 'error', message: String((e && e.message) || e) }, '*'); } catch (x) {}
+  postToParent({ rsw: 'error', message: String((e && e.message) || e) });
 });
 window.addEventListener('unhandledrejection', function (e) {
-  try { parent.postMessage({ rsw: 'error', message: String((e && e.reason && e.reason.message) || e.reason) }, '*'); } catch (x) {}
+  postToParent({ rsw: 'error', message: String((e && e.reason && e.reason.message) || e.reason) });
 });
 if (MODE === 'SEEK') S.playing = false;
 else loop();
@@ -398,8 +406,15 @@ export function makeHtmlProvider({code, width, height, fps}) {
       }
     },
     async renderFrame(i, cnv) {
-      win.__rsw.seek(Math.round((i * 1000) / fps));
-      await snapshotToCanvas(win, cnv, cache);
+      try {
+        win.__rsw.seek(Math.round((i * 1000) / fps));
+        await snapshotToCanvas(win, cnv, cache);
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String((err && err.message) || err));
+        e.userCode = true;
+        e.message = 'Kode HTML gagal dirender di frame ' + i + ': ' + e.message;
+        throw e;
+      }
     },
     destroy() {
       if (iframe) {
