@@ -164,7 +164,14 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
     } catch (err) {}
     throw new Error('Browser tidak dapat menangkap aliran canvas: ' + ((e && e.message) || e));
   }
-  const rec = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: bitrateFor(quality, width, height, fps)});
+  let rec;
+  try {
+    rec = new MediaRecorder(stream, {mimeType: mime, videoBitsPerSecond: bitrateFor(quality, width, height, fps)});
+  } catch (err) {
+    stream.getTracks().forEach((track) => track.stop());
+    canvas.remove();
+    throw err;
+  }
   const chunks = [];
   let recErr = null;
   rec.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
@@ -177,7 +184,17 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
       } catch (err) {}
     };
   });
-  rec.start(1000);
+  // Handle an asynchronous recorder failure immediately, even during rendering.
+  stopped.catch(() => {});
+  try {
+    await provider.renderFrame(0, canvas);
+    checkAbort(signal);
+    rec.start(1000);
+  } catch (err) {
+    stream.getTracks().forEach((track) => track.stop());
+    canvas.remove();
+    throw err;
+  }
   const frameMs = 1000 / fps;
   const wallStart = performance.now();
   let stoppedErr = null;
@@ -185,6 +202,7 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
   try {
     for (let i = 0; i < frames; i++) {
       checkAbort(signal);
+      if (recErr) throw recErr;
       const t0 = performance.now();
       await provider.renderFrame(i, canvas);
       const wait = frameMs - (performance.now() - t0);
@@ -208,7 +226,7 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
       stoppedErr = e;
     }
   }
-  if (stoppedErr && !chunks.length) throw stoppedErr;
+  if (stoppedErr) throw stoppedErr;
   if (!chunks.length) throw new Error('Perekam MediaRecorder tidak menghasilkan data video.');
   const type = mime.split(';')[0];
   const wall = (performance.now() - wallStart) / 1000;
@@ -220,8 +238,10 @@ async function encodeWithMediaRecorder({width, height, fps, frames, container, q
 }
 
 export async function encodeFrames({width, height, fps, frames, container, quality, provider, signal, onProgress, onPhase}) {
-  await provider.init();
   try {
+    checkAbort(signal);
+    await provider.init();
+    checkAbort(signal);
     const codec = await pickCodec(container, width, height, fps, quality);
     if (codec) {
       try {
@@ -238,8 +258,10 @@ export async function encodeFrames({width, height, fps, frames, container, quali
 }
 
 export async function renderPngFrame({width, height, fps, provider, frame, signal}) {
-  await provider.init();
   try {
+    checkAbort(signal);
+    await provider.init();
+    checkAbort(signal);
     checkAbort(signal);
     const canvas = document.createElement('canvas');
     canvas.width = width;

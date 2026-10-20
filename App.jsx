@@ -97,8 +97,8 @@ const clampNum = (v, min, max, d) => {
 };
 
 const sanitizeCfg = (c) => ({
-  width: clampNum(c.width, 16, 8192, 1280),
-  height: clampNum(c.height, 16, 8192, 720),
+  width: Math.round(clampNum(c.width, 16, 8192, 1280)),
+  height: Math.round(clampNum(c.height, 16, 8192, 720)),
   fps: clampNum(c.fps, 1, 120, 30),
   dur: clampNum(c.dur, 0.1, 300, 5),
   quality: QUALS.includes(c.quality) ? c.quality : 'high',
@@ -131,7 +131,10 @@ function downloadText(text, name, mime) {
 const lsGet = (k, fb) => {
   try {
     const v = localStorage.getItem(k);
-    return v ? JSON.parse(v) : fb;
+    const parsed = v ? JSON.parse(v) : fb;
+    if (Array.isArray(fb)) return Array.isArray(parsed) ? parsed : fb;
+    if (fb && typeof fb === 'object') return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : fb;
+    return typeof parsed === typeof fb ? parsed : fb;
   } catch (e) {
     return fb;
   }
@@ -233,6 +236,7 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
         compiled.fn(ctx, t, w, h, Math.round(t * fps), fps, FX);
       } catch (e) {
         setErr(String((e && e.message) || e));
+        setWantPlay(false);
       } finally {
         ctx.restore();
       }
@@ -402,7 +406,10 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
       if (r.width) setBoxW(r.width);
     };
     measure();
-    if (typeof ResizeObserver === 'undefined') return;
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
@@ -554,6 +561,7 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
         {mode === 'remotion' && compiled.comp && (
           <div className="pv-player">
             <Player
+              key={job.code}
               ref={playerRef}
               component={compiled.comp}
               durationInFrames={framesN}
@@ -661,8 +669,14 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
 }
 
 export default function App() {
-  const [mode, setMode] = useState(() => lsGet('rsw-mode', 'remotion'));
-  const [codes, setCodes] = useState(() => ({...DEFAULT_CODE, ...lsGet('rsw-codes', {})}));
+  const [mode, setMode] = useState(() => {
+    const saved = lsGet('rsw-mode', 'remotion');
+    return MODES.some((m) => m.id === saved) ? saved : 'remotion';
+  });
+  const [codes, setCodes] = useState(() => {
+    const saved = lsGet('rsw-codes', {});
+    return Object.fromEntries(Object.entries(DEFAULT_CODE).map(([key, value]) => [key, typeof saved[key] === 'string' ? saved[key] : value]));
+  });
   const [cfg, setCfg] = useState(() => sanitizeCfg({...DEFAULT_CFG, ...lsGet('rsw-cfg', {})}));
   const [prefs, setPrefs] = useState(() => {
     const p = {
@@ -681,7 +695,7 @@ export default function App() {
     return p;
   });
   const [jobs, setJobs] = useState(() =>
-    lsGet('rsw-batch', []).map((j) => ({
+    lsGet('rsw-batch', []).filter((j) => j && MODES.some((m) => m.id === j.mode) && typeof j.code === 'string').map((j) => ({
       ...j,
       sync: j.sync !== false,
       cfg: sanitizeCfg(j.cfg || {}),
@@ -861,6 +875,9 @@ export default function App() {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       try {
         compiled.fn(ctx, t, c.width, c.height, Math.round(t * cfg.fps), cfg.fps, FX);
+      } catch (e) {
+        setErr(String((e && e.message) || e));
+        setPlaying(false);
       } finally {
         ctx.restore();
       }
@@ -920,13 +937,18 @@ export default function App() {
 
   useEffect(() => {
     const el = stageRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
-      const r = el.getBoundingClientRect();
-      if (r.width && cfg.width && cfg.height) {
-        setStageScale(Math.min(r.width / cfg.width, r.height / cfg.height));
+    if (!el) return;
+    const measure = () => {
+      if (el.clientWidth && cfg.width && cfg.height) {
+        setStageScale(Math.min(el.clientWidth / cfg.width, el.clientHeight / cfg.height));
       }
-    });
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', measure);
+      return () => window.removeEventListener('resize', measure);
+    }
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, [cfg.width, cfg.height]);
@@ -1344,7 +1366,10 @@ export default function App() {
   const canExport = prog === null && (mode === 'html' || (!busyErr(mode) && !!codes[mode].trim()));
 
   const exportPng = async () => {
-    if (prog !== null) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setProg(0);
+    abortRef.current = new AbortController();
     const w = evenize(cfg.width);
     const h = evenize(cfg.height);
     let fIdx = 0;
@@ -1352,7 +1377,7 @@ export default function App() {
     try {
       if (mode === 'remotion') {
         if (!compiled.comp) return setMsg('Perbaiki dulu error pada kode.');
-        fIdx = playerRef.current ? playerRef.current.getCurrentFrame() : 0;
+        fIdx = Math.min(framesOut - 1, playerRef.current ? playerRef.current.getCurrentFrame() : 0);
         const composition = {id: 'main', component: compiled.comp, durationInFrames: framesOut, fps: cfg.fps, width: w, height: h};
         const r = await renderStillOnWeb({composition, frame: fIdx});
         const blob = await r.blob();
@@ -1379,7 +1404,7 @@ export default function App() {
           mode === 'canvas'
             ? makeCanvasProvider({code: codes.canvas, width: w, height: h, fps: cfg.fps})
             : makeHtmlProvider({code: codes.html, width: w, height: h, fps: cfg.fps});
-        const blob = await renderPngFrame({width: w, height: h, fps: cfg.fps, provider, frame: fIdx});
+        const blob = await renderPngFrame({width: w, height: h, fps: cfg.fps, provider, frame: Math.min(framesOut - 1, fIdx), signal: abortRef.current.signal});
         setMsg(
           await saveRender({
             id: uid(),
@@ -1399,6 +1424,10 @@ export default function App() {
       }
     } catch (e) {
       setMsg('Gagal ekspor PNG: ' + (e.message || e));
+    } finally {
+      busyRef.current = false;
+      abortRef.current = null;
+      setProg(null);
     }
   };
 
@@ -1721,6 +1750,7 @@ export default function App() {
           <div className="stage" ref={stageRef} style={{'--ar': cfg.width + ' / ' + cfg.height}}>
             {mode === 'remotion' && compiled.comp && (
               <Player
+                key={codes.remotion}
                 ref={playerRef}
                 component={compiled.comp}
                 durationInFrames={framesOut}

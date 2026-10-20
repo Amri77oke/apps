@@ -529,13 +529,13 @@ export function makeHtmlProvider({code, width, height, fps}) {
       iframe.setAttribute('width', String(width));
       iframe.setAttribute('height', String(height));
       iframe.srcdoc = buildDoc(code, 'SEEK');
-      document.body.appendChild(iframe);
       await new Promise((res, rej) => {
         const to = setTimeout(() => rej(new Error('Iframe HTML gagal dimuat (timeout)')), 20000);
         iframe.onload = () => {
           clearTimeout(to);
           res();
         };
+        document.body.appendChild(iframe);
       });
       win = iframe.contentWindow;
       const t0 = Date.now();
