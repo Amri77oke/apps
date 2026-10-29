@@ -202,6 +202,17 @@ function downloadText(text, name, mime) {
   downloadBlob(new Blob([text], {type: mime + ';charset=utf-8'}), name);
 }
 
+// Blob.text() belum ada di Safari < 14 & beberapa browser mobile lama — fallback FileReader.
+const readText = (blob) =>
+  typeof blob.text === 'function'
+    ? blob.text()
+    : new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result));
+        r.onerror = () => rej(r.error);
+        r.readAsText(blob);
+      });
+
 const lsGet = (k, fb) => {
   try {
     const v = localStorage.getItem(k);
@@ -341,9 +352,11 @@ function PreviewCard({job, mainCfg, autoplayAll, onDelete, onRender, onCancel, o
   useEffect(() => {
     if (mode !== 'html') return;
     const onMsg = (e) => {
+      // Hanya terima pesan dari iframe pratinjau & origin yang sama (srcdoc mewarisi origin induk).
+      if (e.origin !== window.location.origin) return;
       if (e.source !== (iframeRef.current && iframeRef.current.contentWindow)) return;
       const d = e.data;
-      if (d && d.rsw === 'error') setErr('HTML: ' + d.message);
+      if (d && d.rsw === 'error') setErr('HTML: ' + String((d && d.message) || d));
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -753,14 +766,20 @@ export default function App() {
   });
   const [cfg, setCfg] = useState(() => sanitizeCfg({...DEFAULT_CFG, ...lsGet('rsw-cfg', {})}));
   const [prefs, setPrefs] = useState(() => {
+    const saved = lsGet('rsw-prefs', null);
+    // Tema awal mengikuti preferensi sistem bila pengunjung belum pernah menyimpan tema.
+    const sysLight =
+      typeof window !== 'undefined' &&
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: light)').matches;
     const p = {
       loop: true,
       autoDl: true,
       pvAuto: true,
       pvW: 260,
       pvDir: 'v',
-      theme: 'dark',
-      ...lsGet('rsw-prefs', {}),
+      theme: sysLight ? 'light' : 'dark',
+      ...(saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {}),
     };
     if (!p.pvWRev) {
       p.pvW = Math.min(Number(p.pvW) || 260, 260);
@@ -856,9 +875,11 @@ export default function App() {
 
   useEffect(() => {
     const onMsg = (e) => {
+      // Hanya terima pesan dari iframe pratinjau & origin yang sama (srcdoc mewarisi origin induk).
+      if (e.origin !== window.location.origin) return;
       if (e.source !== (iframeRef.current && iframeRef.current.contentWindow)) return;
       const d = e.data;
-      if (d && d.rsw === 'error') setErr('HTML: ' + d.message);
+      if (d && d.rsw === 'error') setErr('HTML: ' + String((d && d.message) || d));
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
@@ -1161,7 +1182,7 @@ export default function App() {
     const f = e.target.files[0];
     e.target.value = '';
     if (!f) return;
-    f.text().then((text) => {
+    readText(f).then((text) => {
       const entries = entriesFromFile(f.name, text);
       if (!entries.length) return setMsg('File kosong atau tidak dikenali.');
       const first = entries[0];
@@ -1640,7 +1661,7 @@ export default function App() {
     const failed = [];
     for (const f of files) {
       try {
-        const text = await f.text();
+        const text = await readText(f);
         const es = entriesFromFile(f.name, text);
         if (es.length) entries.push(...es);
         else failed.push(f.name);
