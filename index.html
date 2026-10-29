@@ -1,10 +1,15 @@
 <!doctype html>
 <html lang="id"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<!-- viewport-fit=cover: konten memanfaatkan layar penuh di perangkat ber-notch/iOS safe-area -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="description" content="SA Animation Studio — studio animasi berbasis browser: pratinjau & ekspor video Remotion, Canvas, dan HTML langsung dari perangkat apa pun."/>
+<meta name="color-scheme" content="dark light"/>
+<meta name="theme-color" content="#04060c"/>
 <title>SA Animation Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%2322d3ee'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Ctext x='32' y='43' font-family='Arial,sans-serif' font-size='26' font-weight='900' fill='white' text-anchor='middle'%3ESA%3C/text%3E%3C/svg%3E"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet"/>
+<style>/* Fallback sebelum JS dimuat: latar & teks agar tidak ada layar putih di mode gelap */html,body{margin:0;min-height:100vh;background:#04060c;color:#e6ebf5;font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}@media (prefers-color-scheme: light){html:not([data-theme]){background:#eef1f8;color:#1b2337}}</style>
 </head>
-<body><div id="root"></div><script type="module" src="/main.jsx"></script></body></html>
+<body><div id="root"></div><noscript><div style="max-width:640px;margin:15vh auto;padding:0 20px;text-align:center;font-family:system-ui,sans-serif;line-height:1.6"><h1>SA Animation Studio</h1><p>Aplikasi ini membutuhkan JavaScript. Aktifkan JavaScript di pengaturan browser Anda lalu muat ulang halaman ini.</p></div></noscript><script type="module" src="/main.jsx"></script></body></html>

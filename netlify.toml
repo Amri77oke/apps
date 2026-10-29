@@ -3,3 +3,22 @@
   publish = "dist"
 [build.environment]
   NODE_VERSION = "22"
+
+# Header keamanan dasar — dipakai semua browser, tidak mengganggu fungsi aplikasi
+# ( CSP ketat sengaja tidak dipasang karena pratinjau/render HTML pengguna memuat
+#   skrip & aset eksternal di dalam iframe srcdoc ).
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "SAMEORIGIN"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+    Strict-Transport-Security = "max-age=63072000; includeSubDomains"
+    Cross-Origin-Opener-Policy = "same-origin"
+
+# Aset ber-hash bisa di-cache permanen
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

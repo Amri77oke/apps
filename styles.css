@@ -61,7 +61,10 @@ body {
 }
 
 body {
+  /* Fallback overflow-x:hidden untuk Safari < 16 & Firefox < 81 yang belum punya overflow:clip */
+  overflow-x: hidden;
   overflow-x: clip;
+  -webkit-tap-highlight-color: transparent;
   background:
     radial-gradient(1100px 480px at 85% -10%, rgba(99, 102, 241, 0.16), transparent 60%),
     radial-gradient(900px 420px at -10% 110%, rgba(34, 211, 238, 0.1), transparent 60%),
@@ -69,13 +72,16 @@ body {
   color: var(--text);
   font: 14px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   min-height: 100vh;
+  /* 100dvh: tinggi viewport dinamis (URL bar mobile) — browser lama tetap memakai 100vh */
+  min-height: 100dvh;
   transition: background 0.25s, color 0.25s;
 }
 
 .app {
   max-width: 1520px;
   margin: 0 auto;
-  padding: 0 22px 30px;
+  /* env(safe-area-inset-*): konten tidak tertutup notch/home-indicator di iOS & Android */
+  padding: 0 max(22px, env(safe-area-inset-right)) max(30px, env(safe-area-inset-bottom)) max(22px, env(safe-area-inset-left));
 }
 
 header {
@@ -88,9 +94,11 @@ header {
   gap: 14px;
   flex-wrap: wrap;
   padding: 12px 2px;
+  /* env(safe-area-inset-*): header tidak tertutup notch/status bar perangkat mobile */
+  padding-top: max(12px, env(safe-area-inset-top));
   margin: 0 -22px 18px;
-  padding-left: 22px;
-  padding-right: 22px;
+  padding-left: max(22px, env(safe-area-inset-left));
+  padding-right: max(22px, env(safe-area-inset-right));
   background: var(--header-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -1455,12 +1463,12 @@ ul.jobs progress {
 
 @media (max-width: 720px) {
   .app {
-    padding: 0 14px 24px;
+    padding: 0 max(14px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
   }
 
   header {
     margin: 0 -14px 14px;
-    padding: 10px 14px;
+    padding: max(10px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) 10px max(14px, env(safe-area-inset-left));
   }
 
   .tagline {
