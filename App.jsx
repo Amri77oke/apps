@@ -43,15 +43,89 @@ const MODS = {
 function compileRemotion(src) {
   const {code} = transform(src, {transforms: ['typescript', 'jsx', 'imports'], jsxRuntime: 'classic', production: true});
   const mod = {exports: {}};
+  const seen = {n: 0};
+  const CompositionShim = (props) => {
+    const order = React.useRef(null);
+    if (order.current === null) order.current = seen.n++;
+    if (order.current !== 0) return null;
+    const Inner = props.component;
+    if (Inner != null) return React.createElement(Inner, props.defaultProps || {});
+    return props.children == null ? null : props.children;
+  };
+  CompositionShim.displayName = 'Composition';
+  const captured = {reg: null};
+  const RegisterRootShim = (c) => {
+    captured.reg = c;
+  };
+  const remotionShim = Object.assign({}, R, {Composition: CompositionShim, registerRoot: RegisterRootShim});
   const req = (n) => {
+    if (n === 'remotion') return remotionShim;
     if (!(n in MODS)) throw new Error('Modul "' + n + '" tidak tersedia. Yang ada: ' + Object.keys(MODS).join(', '));
     return MODS[n];
   };
   new Function('require', 'module', 'exports', 'React', code)(req, mod, mod.exports, React);
   const ex = mod.exports;
-  const comp = ex.default || Object.values(ex).find((v) => typeof v === 'function');
+  let comp = ex.default || Object.values(ex).find((v) => typeof v === 'function');
+  if (!comp && captured.reg) comp = captured.reg;
   if (!comp) throw new Error('Komponen tidak ditemukan. Gunakan: export default function Nama() {...}');
-  return {comp, config: ex.config || {}};
+  for (let i = 0; comp && typeof comp === 'object' && !React.isValidElement(comp) && typeof comp.type === 'function' && i < 5; i++) {
+    comp = comp.type;
+  }
+  const findShimEl = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > 10) return null;
+    if (React.isValidElement(node)) {
+      if (node.type === CompositionShim) return node;
+      const kids = node.props ? node.props.children : null;
+      if (Array.isArray(kids)) {
+        for (const k of kids) {
+          const f = findShimEl(k, depth + 1);
+          if (f) return f;
+        }
+        return null;
+      }
+      return findShimEl(kids, depth + 1);
+    }
+    return null;
+  };
+  const configFromProps = (p) => {
+    const config = ex.config ? {...ex.config} : {};
+    if (p.fps) config.fps = p.fps;
+    if (p.width) config.width = p.width;
+    if (p.height) config.height = p.height;
+    if (p.durationInFrames) config.durationInFrames = p.durationInFrames;
+    return config;
+  };
+  let config = ex.config ? {...ex.config} : {};
+  let probe = null;
+  if (React.isValidElement(comp)) {
+    const el = comp.type === CompositionShim ? comp : findShimEl(comp.props && comp.props.children, 0);
+    if (el) {
+      const p = el.props;
+      config = configFromProps(p);
+      const Inner = p.component;
+      if (Inner != null && (typeof Inner === 'function' || (typeof Inner === 'object' && !React.isValidElement(Inner)))) {
+        comp = Inner;
+      }
+    } else {
+      const el0 = comp;
+      comp = () => el0;
+    }
+  } else if (typeof comp === 'function') {
+    const rootFn = comp;
+    probe = () => {
+      try {
+        const out = rootFn();
+        const el = React.isValidElement(out) && out.type === CompositionShim ? out : findShimEl(out, 0);
+        if (el) return configFromProps(el.props);
+      } catch (e) {}
+      return null;
+    };
+    comp = (props) => {
+      seen.n = 0;
+      return React.createElement(rootFn, props);
+    };
+  }
+  return {comp, config, probe};
 }
 
 const MODES = [
@@ -819,7 +893,11 @@ export default function App() {
   }, [compiled, mode]);
 
   useEffect(() => {
-    const c = compiled.config || {};
+    const c = {...(compiled.config || {})};
+    if (typeof compiled.probe === 'function') {
+      const extra = compiled.probe();
+      if (extra) Object.assign(c, extra);
+    }
     const key = JSON.stringify(c);
     if (!key || key === '{}' || key === lastCfgRef.current) return;
     lastCfgRef.current = key;
