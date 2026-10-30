@@ -238,6 +238,116 @@ export default function FramerBola() {
     </AbsoluteFill>
   );
 }`,
+
+    'Grafik Data (chroma + d3)': `// Data-viz profesional: d3-scale & d3-shape membentuk kurva, chroma-js mewarnai.
+// Semua nilai diturunkan dari frame — ekspor 100% deterministik.
+import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate} from 'remotion';
+import chroma from 'chroma-js';
+import {scaleLinear} from 'd3-scale';
+import {line as d3line, curveBasis} from 'd3-shape';
+
+export const config = {durationInFrames: 150, fps: 30, width: 1280, height: 720};
+
+const DATA = [12, 35, 22, 48, 30, 66, 52, 78, 60, 88, 72, 96];
+const WARNA = ['#22d3ee', '#818cf8', '#f472b6'];
+
+export default function GrafikData() {
+  const frame = useCurrentFrame();
+  const {width, height} = useVideoConfig();
+  const p = interpolate(frame, [0, 100], [0, 1], {extrapolateRight: 'clamp'});
+  const x = scaleLinear().domain([0, DATA.length - 1]).range([90, width - 90]);
+  const y = scaleLinear().domain([0, 100]).range([height - 110, 110]);
+  const n = Math.max(2, Math.round(DATA.length * p));
+  const pts = DATA.slice(0, n).map((v, i) => [x(i), y(v)]);
+  const jalur = d3line().x((d) => d[0]).y((d) => d[1]).curve(curveBasis)(pts) || '';
+  const bg = chroma.mix('#0b1020', '#1e1b4b', 0.5 + 0.5 * Math.sin(frame / 30)).hex();
+  const aksen = chroma.scale(WARNA)(p).hex();
+  return (
+    <AbsoluteFill style={{background: 'linear-gradient(160deg, ' + bg + ', #020617)'}}>
+      {DATA.slice(0, n).map((v, i) => (
+        <div key={i} style={{
+          position: 'absolute', left: x(i) - 22, width: 44,
+          top: y(v), height: height - 110 - y(v),
+          background: chroma.scale(WARNA)(i / (DATA.length - 1)).hex(),
+          opacity: 0.85, borderRadius: '6px 6px 0 0',
+        }} />
+      ))}
+      <svg style={{position: 'absolute', inset: 0}} width={width} height={height}>
+        <path d={jalur} fill="none" stroke={aksen} strokeWidth={5} strokeLinecap="round" />
+        {pts.map((pt, i) => <circle key={i} cx={pt[0]} cy={pt[1]} r={6} fill="#fff" />)}
+      </svg>
+      <div style={{position: 'absolute', left: 90, top: 48, fontSize: 26, fontWeight: 800, color: aksen, letterSpacing: '0.18em'}}>
+        PERTUMBUHAN Q4 · CHROMA × D3
+      </div>
+    </AbsoluteFill>
+  );
+}`,
+
+    'Fisika Bola Pantul (matter-js)': `// Fisika deterministik dengan matter-js: engine di-step manual per frame (tanpa
+// ticker internal) dan di-reset bila frame mundur — ekspor frame sama = gambar sama.
+import {AbsoluteFill, useCurrentFrame} from 'remotion';
+import Matter from 'matter-js';
+
+export const config = {durationInFrames: 180, fps: 30, width: 1280, height: 720};
+
+const W = 1280;
+const H = 720;
+const FPS = 30;
+// Substep 2× per frame (delta ≤ 16,7 ms) agar simulasi akurat & stabil.
+const LANGKAH = 1000 / 60;
+let cache = {t: -1, engine: null};
+
+function pastel(i) {
+  return ['hsl(200 90% 62%)', 'hsl(262 84% 68%)', 'hsl(320 84% 64%)', 'hsl(160 74% 50%)'][i % 4];
+}
+
+function simulasiHingga(f) {
+  const target = f * (1000 / FPS);
+  if (!cache.engine || target < cache.t) {
+    cache.engine = Matter.Engine.create({gravity: {x: 0, y: 1}});
+    Matter.Composite.add(cache.engine.world, [
+      Matter.Bodies.rectangle(W / 2, H + 30, W + 400, 60, {isStatic: true}),
+      Matter.Bodies.rectangle(-30, H / 2, 60, H * 2, {isStatic: true}),
+      Matter.Bodies.rectangle(W + 30, H / 2, 60, H * 2, {isStatic: true}),
+      Matter.Bodies.rectangle(W * 0.55, H * 0.62, 340, 26, {isStatic: true, angle: -0.16}),
+      Matter.Bodies.rectangle(W * 0.3, H * 0.8, 300, 26, {isStatic: true, angle: 0.12}),
+    ].concat(
+      Array.from({length: 9}, (_, i) =>
+        Matter.Bodies.circle(180 + i * 115, -60 - i * 40, 24 + (i % 3) * 12, {restitution: 0.82, frictionAir: 0.0015})
+      )
+    ));
+    cache.t = 0;
+  }
+  while (cache.t < target - 1e-9) {
+    Matter.Engine.update(cache.engine, LANGKAH);
+    cache.t += LANGKAH;
+  }
+  return Matter.Composite.allBodies(cache.engine.world);
+}
+
+export default function FisikaBola() {
+  const frame = useCurrentFrame();
+  const bola = simulasiHingga(frame).filter((b) => !b.isStatic);
+  return (
+    <AbsoluteFill style={{background: 'linear-gradient(180deg, #0b1020, #1e1b4b 130%)', overflow: 'hidden'}}>
+      {bola.map((b, i) => (
+        <div key={b.id} style={{
+          position: 'absolute',
+          left: b.position.x - b.circleRadius,
+          top: b.position.y - b.circleRadius,
+          width: b.circleRadius * 2,
+          height: b.circleRadius * 2,
+          borderRadius: '50%',
+          background: 'radial-gradient(circle at 35% 30%, rgba(255,255,255,.55), rgba(255,255,255,0) 42%), ' + pastel(i),
+          boxShadow: '0 10px 30px rgba(2,6,23,.5)',
+        }} />
+      ))}
+      <div style={{position: 'absolute', left: 36, top: 30, color: '#94a3b8', fontSize: 20, letterSpacing: '0.2em'}}>
+        MATTER-JS · FISIKA DETERMINISTIK
+      </div>
+    </AbsoluteFill>
+  );
+}`,
   },
 
   canvas: {

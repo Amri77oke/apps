@@ -18,6 +18,11 @@ import * as lucideIcons from 'lucide-react';
 import * as zustandMod from 'zustand';
 import {clsx as clsxMod} from 'clsx';
 import {nanoid as nanoidMod} from 'nanoid';
+import chromaJs from 'chroma-js';
+import * as d3Scale from 'd3-scale';
+import * as d3Shape from 'd3-shape';
+import * as gsapNs from 'gsap';
+import MatterJs from 'matter-js';
 import {TEMPLATES, DEFAULT_CODE} from './templates.js';
 import {FX} from './fx.js';
 import {
@@ -55,6 +60,15 @@ const MODS = {
   zustand: zustandMod,
   clsx: {clsx: clsxMod, default: clsxMod},
   nanoid: {nanoid: nanoidMod, default: nanoidMod},
+  // Modul suplemen: warna, data-viz, fisika, timeline — semuanya deterministik
+  // bila dipakai per-frame (kecuali ticker gsap, lihat catatan di hint).
+  // __esModule + default agar `import x from 'mod'` interop sucrase menghasilkan
+  // fungsi ekspor default, bukan objek namespace.
+  'chroma-js': Object.assign({__esModule: true, default: chromaJs}, chromaJs),
+  'd3-scale': d3Scale,
+  'd3-shape': d3Shape,
+  gsap: Object.assign({__esModule: true, default: gsapNs.gsap || gsapNs.default || gsapNs}, gsapNs),
+  'matter-js': Object.assign({__esModule: true, default: MatterJs}, MatterJs),
 };
 
 function compileRemotion(src) {
@@ -154,7 +168,7 @@ const MODES = [
   {id: 'html', label: 'HTML · CSS · JS'},
 ];
 const MODE_HINT = {
-  remotion: 'Komponen React + Remotion: interpolate, spring, noise, transitions, shapes. TypeScript/TSX penuh — interface, enum, generic, satisfies, dekorator, runtime JSX otomatis (tanpa import React).',
+  remotion: 'Komponen React + Remotion: interpolate, spring, noise, transitions, shapes. TypeScript/TSX penuh — interface, enum, generic, satisfies, dekorator, runtime JSX otomatis (tanpa import React). Modul terpasang: framer-motion, lucide-react, zustand, clsx, nanoid, chroma-js, d3-scale, d3-shape, gsap, matter-js. Ekspor deterministik: turunkan gaya dari useCurrentFrame.',
   canvas: 'Tulis "function animate(ctx, t, w, h, frame, fps)". Pustaka FX (easing, noise, palet, helper) tersedia otomatis.',
   html: 'Dokumen HTML/CSS/JS lengkap. Animasi CSS, rAF, dan timer disinkronkan otomatis saat ekspor.',
 };

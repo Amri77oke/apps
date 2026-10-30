@@ -10,6 +10,9 @@ const splitVendor = (id) => {
   if (id.includes('/remotion') || id.includes('@remotion')) return 'remotion';
   if (id.includes('framer-motion') || id.includes('motion-dom') || id.includes('motion-utils')) return 'framer-motion';
   if (id.includes('lucide-react')) return 'lucide';
+  if (id.includes('chroma-js') || /[\\/]d3-/.test(id)) return 'chroma-d3';
+  if (id.includes('gsap')) return 'gsap';
+  if (id.includes('matter-js')) return 'matter';
   if (id.includes('react-dom') || id.match(/[\\/]react[\\/]/) || id.includes('scheduler')) return 'react';
   if (id.includes('sucrase')) return 'sucrase';
   return 'vendor';
