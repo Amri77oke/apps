@@ -14,12 +14,17 @@
     "@remotion/shapes": "^4.0.536",
     "@remotion/transitions": "^4.0.536",
     "@remotion/web-renderer": "^4.0.536",
+    "clsx": "^2.1.1",
     "fflate": "^0.8.3",
-    "mediabunny": "^1.61.3",
+    "framer-motion": "^14.8.0",
+    "lucide-react": "^1.65.0",
+    "mediabunny": "^1.62.0",
+    "nanoid": "^6.0.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "remotion": "^4.0.536",
-    "sucrase": "^3.35.0"
+    "sucrase": "^3.35.0",
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
