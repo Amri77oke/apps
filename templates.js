@@ -137,6 +137,107 @@ export default function Counter() {
     </AbsoluteFill>
   );
 }`,
+
+    'TSX Lengkap (TypeScript)': `// TSX penuh: interface, type alias, enum, generic, satisfies, dekorator —
+// runtime JSX otomatis, jadi TIDAK perlu import React. Simpan berkas sebagai .tsx.
+import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring} from 'remotion';
+
+export const config = {durationInFrames: 150, fps: 30, width: 1280, height: 720};
+
+interface Kartu {
+  teks: string;
+  hue: number;
+  delay: number;
+}
+
+enum Arah {
+  Naik = 1,
+  Turun = -1,
+}
+
+type Sekumpulan = {judul: string; kata: string[]};
+
+function buatKartu(kata: string, i: number): Kartu {
+  return {teks: kata, hue: 200 + i * 26, delay: i * 6} satisfies Kartu;
+}
+
+// Generic: tipe K mengikuti argumen — hanya contoh, dihapus saat kompilasi.
+function ulang<K extends string>(t: K, n: number): K[] {
+  return Array.from({length: n}, () => t);
+}
+
+const OPSI: Sekumpulan = {judul: ulang('TSX', 1)[0] + ' PENUH', kata: ['TYPE', 'SAFE', 'ENUM', 'GENERIC']};
+
+const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
+
+export default function AnimasiTSX() {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const kartu: Kartu[] = OPSI.kata.map(buatKartu);
+  const arah: Arah = frame < 90 ? Arah.Naik : Arah.Turun;
+  return (
+    <AbsoluteFill style={{background: 'linear-gradient(135deg, #0b1020, #1e1b4b)', justifyContent: 'center', alignItems: 'center', fontFamily: 'system-ui'}}>
+      <div style={{fontSize: 34, fontWeight: 800, color: '#a5b4fc', letterSpacing: '0.28em', marginBottom: 26}}>
+        {OPSI.judul} {arah === Arah.Naik ? '▲' : '▼'}
+      </div>
+      <div style={{display: 'flex', gap: 18}}>
+        {kartu.map((k) => {
+          const s = spring({frame: frame - k.delay, fps, config: {damping: 14, stiffness: 170}});
+          const y = interpolate(s, [0, 1], [60 * arah, 0]);
+          return (
+            <div key={k.teks} style={{
+              padding: '18px 30px', borderRadius: 16, background: 'hsl(' + k.hue + ' 70% 22%)',
+              border: '2px solid hsl(' + k.hue + ' 80% 55%)', color: 'hsl(' + k.hue + ' 90% 80%)',
+              fontSize: 40, fontWeight: 900, opacity: clamp01(s),
+              transform: 'translateY(' + y + 'px) scale(' + (0.8 + 0.2 * s) + ')'
+            }}>{k.teks}</div>
+          );
+        })}
+      </div>
+      <div style={{position: 'absolute', bottom: 28, fontSize: 17, color: '#64748b', letterSpacing: '0.12em'}}>
+        interface · enum · generic · satisfies · tanpa import React
+      </div>
+    </AbsoluteFill>
+  );
+}`,
+
+    'Framer Motion + Ikon (motion.div)': `// Modul pendukung kini tersedia di sandbox: framer-motion, lucide-react, zustand, clsx, nanoid.
+// Catatan ekspor: animasi time-based framer (initial/animate) hanya realtime di pratinjau —
+// untuk ekspor deterministik, turunkan gaya dari useCurrentFrame (seperti contoh ini).
+import {AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring} from 'remotion';
+import {motion} from 'framer-motion';
+import {Sparkles} from 'lucide-react';
+
+export const config = {durationInFrames: 150, fps: 30, width: 1280, height: 720};
+
+export default function FramerBola() {
+  const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
+  const s = spring({frame, fps, config: {damping: 12, stiffness: 140}});
+  const y = interpolate(s, [0, 1], [-220, 0]);
+  const squash = interpolate(s, [0, 0.6, 1], [1.25, 0.85, 1]);
+  const spin = interpolate(frame, [0, 150], [0, 360]);
+  const glow = Math.min(1, Math.max(0.2, s));
+  return (
+    <AbsoluteFill style={{background: 'radial-gradient(circle at 50% 120%, #1e1b4b, #020617)', justifyContent: 'center', alignItems: 'center'}}>
+      <motion.div
+        style={{
+          width: 160, height: 160, borderRadius: '50%',
+          background: 'linear-gradient(135deg, #818cf8, #22d3ee)',
+          transform: 'translateY(' + y + 'px) scaleY(' + squash + ') scaleX(' + (2 - squash) + ')',
+          boxShadow: '0 30px 80px rgba(99,102,241,.5)', opacity: glow,
+        }}
+      />
+      <motion.div style={{display: 'flex', alignItems: 'center', gap: 14, marginTop: 44, opacity: s}}>
+        <Sparkles size={30} color="#facc15" />
+        <span style={{color: '#94a3b8', fontSize: 22, letterSpacing: '0.18em'}}>
+          framer-motion + lucide di sandbox
+        </span>
+        <Sparkles size={30} color="#facc15" style={{transform: 'rotate(' + spin + 'deg)'}} />
+      </motion.div>
+    </AbsoluteFill>
+  );
+}`,
   },
 
   canvas: {

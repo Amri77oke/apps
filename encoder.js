@@ -1,14 +1,10 @@
 import {transform} from 'sucrase';
-import {
-  Output,
-  BufferTarget,
-  Mp4OutputFormat,
-  WebMOutputFormat,
-  CanvasSource,
-  canEncodeVideo,
-  getFirstEncodableVideoCodec,
-} from 'mediabunny';
 import {FX} from './fx.js';
+
+// mediabunny hanya dipakai saat ekspor video — dimuat on-demand via dynamic import
+// agar tidak masuk bundle awal. Versi dipanggil langsung dari modulnya (bukan
+// destructuring di awal) supaya selalu mengambil instance yang benar.
+const mediabunny = () => import('mediabunny');
 
 export {makeHtmlProvider} from './htmlmode.js';
 
@@ -27,6 +23,7 @@ export async function pickCodec(container, w, h, fps, quality) {
   if (typeof VideoEncoder === 'undefined') return null;
   const wanted = container === 'mp4' ? ['avc', 'hevc', 'av1'] : ['vp9', 'vp8', 'av1'];
   try {
+    const {getFirstEncodableVideoCodec} = await mediabunny();
     return await getFirstEncodableVideoCodec(wanted, {
       width: w,
       height: h,
@@ -101,6 +98,7 @@ export function makeCanvasProvider({code, width, height, fps}) {
 }
 
 async function encodeWithMediabunny({width, height, fps, frames, container, codec, quality, provider, signal, onProgress, onPhase}) {
+  const {Output, BufferTarget, Mp4OutputFormat, WebMOutputFormat, CanvasSource} = await mediabunny();
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -285,5 +283,6 @@ export async function renderPngFrame({width, height, fps, provider, frame, signa
 export async function canExportWebCodec(container, w, h, fps, quality) {
   const codec = await pickCodec(container, w, h, fps, quality);
   if (!codec) return false;
+  const {canEncodeVideo} = await mediabunny();
   return canEncodeVideo(codec, {width: w, height: h, bitrate: bitrateFor(quality, w, h, fps)});
 }

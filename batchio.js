@@ -145,8 +145,10 @@ export function parseTXT(text) {
 }
 
 export function guessMode(code) {
+  // Komponen JSX kapital (<Judul/>) atau arrow → JSX: khas berkas .tsx/.jsx → mode Remotion.
+  if (/<[A-Z][A-Za-z0-9]*[\s/>]|=>\s*</.test(code)) return 'remotion';
   if (/<html[\s>]|\!doctype|<!doctype|<style[\s>]|<div[\s>]|<body[\s>]/i.test(code)) return 'html';
-  if (/remotion|interpolate|useCurrentFrame|AbsoluteFill|spring\(/i.test(code)) return 'remotion';
+  if (/remotion|interpolate|useCurrentFrame|useVideoConfig|AbsoluteFill|spring\(|from\s+['"]react|registerRoot/i.test(code)) return 'remotion';
   return 'canvas';
 }
 
