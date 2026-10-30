@@ -11,6 +11,18 @@ import {slide} from '@remotion/transitions/slide';
 import {wipe} from '@remotion/transitions/wipe';
 import {flip} from '@remotion/transitions/flip';
 import {renderMediaOnWeb, renderStillOnWeb, canRenderMediaOnWeb} from '@remotion/web-renderer';
+import * as jsxRuntime from 'react/jsx-runtime';
+import * as jsxDevRuntime from 'react/jsx-dev-runtime';
+import * as framerMotion from 'framer-motion';
+import * as lucideIcons from 'lucide-react';
+import * as zustandMod from 'zustand';
+import {clsx as clsxMod} from 'clsx';
+import {nanoid as nanoidMod} from 'nanoid';
+import chromaJs from 'chroma-js';
+import * as d3Scale from 'd3-scale';
+import * as d3Shape from 'd3-shape';
+import * as gsapNs from 'gsap';
+import MatterJs from 'matter-js';
 import {TEMPLATES, DEFAULT_CODE} from './templates.js';
 import {FX} from './fx.js';
 import {
@@ -25,7 +37,6 @@ import {
 import {buildDoc, buildStandalone} from './htmlmode.js';
 import {toCSV, toTXT, entriesFromFile, CODE_FILE_ACCEPT} from './batchio.js';
 import * as store from './store.js';
-import {zipSync, strToU8} from 'fflate';
 
 const MODS = {
   react: React,
@@ -38,10 +49,33 @@ const MODS = {
   '@remotion/transitions/slide': {slide},
   '@remotion/transitions/wipe': {wipe},
   '@remotion/transitions/flip': {flip},
+  // Runtime JSX otomatis: kode .tsx modern tanpa `import React` di-transform sucrase
+  // menjadi pemanggilan ke react/jsx-runtime (dan jsx-dev-runtime bila diimpor eksplisit).
+  'react/jsx-runtime': jsxRuntime,
+  'react/jsx-dev-runtime': jsxDevRuntime,
+  // Modul pendukung animasi untuk kode pengguna: framer-motion, ikon, state, util.
+  'framer-motion': framerMotion,
+  motion: framerMotion,
+  'lucide-react': lucideIcons,
+  zustand: zustandMod,
+  clsx: {clsx: clsxMod, default: clsxMod},
+  nanoid: {nanoid: nanoidMod, default: nanoidMod},
+  // Modul suplemen: warna, data-viz, fisika, timeline — semuanya deterministik
+  // bila dipakai per-frame (kecuali ticker gsap, lihat catatan di hint).
+  // __esModule + default agar `import x from 'mod'` interop sucrase menghasilkan
+  // fungsi ekspor default, bukan objek namespace.
+  'chroma-js': Object.assign({__esModule: true, default: chromaJs}, chromaJs),
+  'd3-scale': d3Scale,
+  'd3-shape': d3Shape,
+  gsap: Object.assign({__esModule: true, default: gsapNs.gsap || gsapNs.default || gsapNs}, gsapNs),
+  'matter-js': Object.assign({__esModule: true, default: MatterJs}, MatterJs),
 };
 
 function compileRemotion(src) {
-  const {code} = transform(src, {transforms: ['typescript', 'jsx', 'imports'], jsxRuntime: 'classic', production: true});
+  // TSX penuh: 'typescript' menghapus tipe (interface, generic, enum, satisfies, dekorator),
+  // 'automatic' memakai runtime JSX modern (tanpa wajib import React), 'imports'
+  // mengarahkan impor ke modul yang terdaftar di MODS.
+  const {code} = transform(src, {transforms: ['typescript', 'jsx', 'imports'], jsxRuntime: 'automatic', production: true});
   const mod = {exports: {}};
   const seen = {n: 0};
   const CompositionShim = (props) => {
@@ -134,7 +168,7 @@ const MODES = [
   {id: 'html', label: 'HTML · CSS · JS'},
 ];
 const MODE_HINT = {
-  remotion: 'Komponen React + Remotion: interpolate, spring, noise, transitions, shapes.',
+  remotion: 'Komponen React + Remotion: interpolate, spring, noise, transitions, shapes. TypeScript/TSX penuh — interface, enum, generic, satisfies, dekorator, runtime JSX otomatis (tanpa import React). Modul terpasang: framer-motion, lucide-react, zustand, clsx, nanoid, chroma-js, d3-scale, d3-shape, gsap, matter-js. Ekspor deterministik: turunkan gaya dari useCurrentFrame.',
   canvas: 'Tulis "function animate(ctx, t, w, h, frame, fps)". Pustaka FX (easing, noise, palet, helper) tersedia otomatis.',
   html: 'Dokumen HTML/CSS/JS lengkap. Animasi CSS, rAF, dan timer disinkronkan otomatis saat ekspor.',
 };
@@ -180,7 +214,7 @@ const sanitizeCfg = (c) => ({
 
 const fmtSize = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB');
 
-const extFor = (m) => (m === 'html' ? 'html' : m === 'canvas' ? 'js' : 'jsx');
+const extFor = (m) => (m === 'html' ? 'html' : m === 'canvas' ? 'js' : 'tsx');
 
 function downloadBlob(blob, name) {
   if (!blob) return false;
@@ -1214,7 +1248,7 @@ export default function App() {
   };
 
   const saveCode = () => {
-    const ext = mode === 'html' ? 'html' : mode === 'canvas' ? 'js' : 'jsx';
+    const ext = mode === 'html' ? 'html' : mode === 'canvas' ? 'js' : 'tsx';
     downloadText(codes[mode], slug(animName) + '.' + ext, 'text/plain');
     setMsg('Kode disimpan: ' + slug(animName) + '.' + ext);
   };
@@ -1359,6 +1393,8 @@ export default function App() {
         const videoCodec = container === 'mp4' ? 'h264' : 'vp9';
         const errsOf = (c) => c.issues.filter((i) => i.severity === 'error');
         let muted = false;
+        // web-renderer hanya dibutuhkan saat ekspor — dimuat on-demand agar bundle awal tetap ringan.
+        const {canRenderMediaOnWeb, renderMediaOnWeb} = await import('@remotion/web-renderer');
         let chk = await canRenderMediaOnWeb({width: w, height: h, container, videoCodec});
         if (!chk.canRender && errsOf(chk).length && errsOf(chk).every((i) => i.type === 'audio-codec-unsupported')) {
           // Browser tidak punya encoder audio — coba lagi tanpa audio agar render tetap jalan.
@@ -1478,6 +1514,7 @@ export default function App() {
         if (!compiled.comp) return setMsg('Perbaiki dulu error pada kode.');
         fIdx = Math.min(framesOut - 1, playerRef.current ? playerRef.current.getCurrentFrame() : 0);
         const composition = {id: 'main', component: compiled.comp, durationInFrames: framesOut, fps: cfg.fps, width: w, height: h};
+        const {renderStillOnWeb} = await import('@remotion/web-renderer');
         const r = await renderStillOnWeb({composition, frame: fIdx});
         const blob = await r.blob();
         setMsg(
@@ -1606,6 +1643,7 @@ export default function App() {
     if (list.length === 1) return downloadBlob(list[0].blob, list[0].name);
     setMsg('Menyiapkan ZIP ' + list.length + ' video…');
     try {
+      const {zipSync} = await import('fflate');
       const files = {};
       for (const l of list) {
         let name = l.name;
@@ -1711,11 +1749,12 @@ export default function App() {
 
   const effJobsList = () => jobs.map((j) => ({...j, cfg: effCfg(j)}));
 
-  const exportZip = () => {
+  const exportZip = async () => {
     const effJobs = effJobsList();
     const list = effJobs.length
       ? effJobs
       : [{name: animName, mode, code: codes[mode], cfg: sanitizeCfg(cfg)}];
+    const {zipSync, strToU8} = await import('fflate');
     const files = {};
     const used = new Set();
     for (const j of list) {
